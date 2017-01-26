@@ -1,5 +1,6 @@
 # Dump chrome://webrtc-internals event log
 Chrome 49 added a highly useful event log which, among other things, contains the RTP packet headers of any packets received or sent.
+See https://tokbox.com/blog/how-to-get-a-webrtc-diagnostic-recording-from-chrome-49/ for how to get it.
 
 # Usage
 ```
