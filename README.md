@@ -11,3 +11,9 @@ To dump all incoming or outgoing RTP traffic into a PCAP:
 node rtp.js event_log_file incoming | text2pcap -u 10000,20000 - some.pcap
 node rtp.js event_log_file outgoing | text2pcap -u 10000,20000 - some.pcap
 ```
+
+# Generating the protobuf file
+rtc_event_log.proto is generated from the description in the webrtc.org tree:
+```
+protoc-c webrtc/logging/rtc_event_log/rtc_event_log.proto -o rtc_event_log.proto
+```
