@@ -51,7 +51,6 @@ events.stream.forEach(function(event) {
     case 'RTCP_EVENT':
         packet = event.rtcp_packet;
         if (incoming !== undefined && incoming !== packet.incoming) return;
-        console.log('packet is', packet.packet_data);
         var hex = packet.packet_data.toString('hex');
         var bytes = '';
         for (var j = 0; j < hex.length; j += 2) {
