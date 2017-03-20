@@ -27,13 +27,36 @@ function pad(num) {
     return s.substr(s.length - 8);
 }
 
+function strftime(time) {
+    var time_h = Math.floor(time / 3.6e9);
+    time -= time_h * 3.6e9;
+    var time_m = Math.floor(time / 6e7);
+    time -= time_m * 6e7;
+    var time_s = Math.floor(time / 1e6);
+    time -= time_s * 1e6;
+    return time_h.toString() + ':' + time_m.toString() + ':' + time_s.toString()
+        + '.' + ('000000' + time).substr(-6);
+}
+
+var basetime;
 var events = p.parse(logfile, 'webrtc.rtclog.EventStream');
 events.stream.forEach(function(event) {
+
+    // Use first packet in any direction as base time
+    switch(event.type) {
+    case 'RTP_EVENT':
+    case 'RTCP_EVENT':
+        if (basetime === undefined)
+            basetime = event.timestamp_us;
+    }
+
     var packet;
     switch(event.type) {
     case 'RTP_EVENT':
         packet = event.rtp_packet;
         if (incoming !== undefined && incoming !== packet.incoming) return;
+
+        console.log(strftime(event.timestamp_us - basetime));
 
         // dump in rtpdump format.
         var hex = packet.header.toString('hex');
@@ -51,6 +74,9 @@ events.stream.forEach(function(event) {
     case 'RTCP_EVENT':
         packet = event.rtcp_packet;
         if (incoming !== undefined && incoming !== packet.incoming) return;
+
+        console.log(strftime(event.timestamp_us - basetime));
+
         var hex = packet.packet_data.toString('hex');
         var bytes = '';
         for (var j = 0; j < hex.length; j += 2) {
