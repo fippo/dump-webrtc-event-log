@@ -16,5 +16,21 @@ node rtp.js event_log_file outgoing | text2pcap -t "%T." -u 10000,20000 - some.p
 # Generating the protobuf file
 rtc_event_log.proto is generated from the description in the webrtc.org tree:
 ```
-protoc-c webrtc/logging/rtc_event_log/rtc_event_log.proto -o rtc_event_log.proto
+protoc-c webrtc/logging/rtc_event_log/rtc_event_log.proto -o rtc_event_log.desc
 ```
+
+# Running on OS X
+`yarn install` or `npm install`
+
+If you get an error on `node-gyp` step, try
+```
+$ export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
+```
+And then run `install` again.
+## Installing proto-c
+```
+$ brew install protobuf-c
+```
+
+# WebRTC tree
+https://chromium.googlesource.com/external/webrtc
