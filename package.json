@@ -2,13 +2,13 @@
   "name": "dump-webrtc-event-log",
   "version": "1.0.0",
   "description": "Dumps Chrome WebRTC event log",
-  "main": "dump.js",
+  "main": "rtp.js",
   "keywords": [
     "webrtc"
   ],
   "author": "Philipp Hancke <philipp@tokbox.com>",
   "license": "MIT",
   "dependencies": {
-    "node-protobuf": "^1.2.12"
+    "protobufjs": "^6.10.2"
   }
 }

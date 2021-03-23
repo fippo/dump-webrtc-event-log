@@ -4,8 +4,8 @@
 //
 // rtc_event_log2rtp_dump probably does a better job but requires a webrtc build.
 var fs = require('fs');
-var proto = require('node-protobuf');
-var p = new proto(fs.readFileSync('rtc_event_log.desc')); // compiled from https://chromium.googlesource.com/external/webrtc/+/master/webrtc/call/rtc_event_log.proto
+var proto = require('protobufjs');
+var p = proto.loadSync('rtc_event_log.proto'); // compiled from https://chromium.googlesource.com/external/webrtc/+/master/webrtc/call/rtc_event_log.proto
 var logfile = fs.readFileSync(process.argv[2]);
 
 var incoming;
@@ -39,24 +39,27 @@ function strftime(time) {
 }
 
 var basetime;
-var events = p.parse(logfile, 'webrtc.rtclog.EventStream');
+var EventStream = p.root.lookupType('webrtc.rtclog.EventStream');
+var events = EventStream.decode(logfile);
 events.stream.forEach(function(event) {
 
     // Use first packet in any direction as base time
     switch(event.type) {
-    case 'RTP_EVENT':
-    case 'RTCP_EVENT':
+    case 3://'RTP_EVENT':
+    case 4://'RTCP_EVENT':
         if (basetime === undefined)
-            basetime = event.timestamp_us;
+            basetime = event.timestampUs;
+        break;
     }
+        
 
     var packet;
     switch(event.type) {
-    case 'RTP_EVENT':
-        packet = event.rtp_packet;
+    case 3://'RTP_EVENT':
+        packet = event.rtpPacket;
         if (incoming !== undefined && incoming !== packet.incoming) return;
 
-        console.log(strftime(event.timestamp_us - basetime));
+        console.log(strftime(event.timestampUs - basetime));
 
         // dump in rtpdump format.
         var hex = packet.header.toString('hex');
@@ -65,19 +68,19 @@ events.stream.forEach(function(event) {
             bytes += hex[j] + hex[j+1] + ' ';
         }
         // add null payload
-        for (j = 0; j < packet.packet_length; j++) {
+        for (j = 0; j < packet.packetLength; j++) {
             bytes += '00 ';
         }
         console.log(pad(0) + ' ' + bytes.trim());
         break;
 
-    case 'RTCP_EVENT':
-        packet = event.rtcp_packet;
+    case 4://'RTCP_EVENT':
+        packet = event.rtcpPacket;
         if (incoming !== undefined && incoming !== packet.incoming) return;
 
-        console.log(strftime(event.timestamp_us - basetime));
+        console.log(strftime(event.timestampUs - basetime));
 
-        var hex = packet.packet_data.toString('hex');
+        var hex = packet.packetData.toString('hex');
         var bytes = '';
         for (var j = 0; j < hex.length; j += 2) {
             bytes += hex[j] + hex[j+1] + ' ';
