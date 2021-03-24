@@ -1,11 +1,11 @@
 // extracts rtp packets and dumps then text2pcap format for easy import in wireshark.
 // usage:
-// node rtp.js <file> [incoming|outgoing] | text2pcap -u 10000,20000 - some.pcap
+// node rtp.js <file> [incoming|outgoing] | text2pcap -D -4 1.1.1.1,2.2.2.2 -u 10000,20000 -t "%T." -n - output/some.pcapng
 //
 // rtc_event_log2rtp_dump probably does a better job but requires a webrtc build.
 var fs = require('fs');
 var proto = require('protobufjs');
-var p = proto.loadSync('rtc_event_log.proto'); // compiled from https://chromium.googlesource.com/external/webrtc/+/master/webrtc/call/rtc_event_log.proto
+var p = proto.loadSync('rtc_event_log.proto'); 
 var logfile = fs.readFileSync(process.argv[2]);
 
 var incoming;
@@ -18,7 +18,7 @@ if (process.argv.length >= 3) {
     incoming = false;
     break;
   default:
-    console.log('unknown', process.argv[3]);
+    break;
   }
 }
 
@@ -36,6 +36,14 @@ function strftime(time) {
     time -= time_s * 1e6;
     return time_h.toString() + ':' + time_m.toString() + ':' + time_s.toString()
         + '.' + ('000000' + time).substr(-6);
+}
+
+function directionPrefix(incoming) {
+    if (incoming) {
+        return 'I'
+    } else {
+        return 'O'
+    }
 }
 
 var basetime;
@@ -57,9 +65,10 @@ events.stream.forEach(function(event) {
     switch(event.type) {
     case 3://'RTP_EVENT':
         packet = event.rtpPacket;
+        
         if (incoming !== undefined && incoming !== packet.incoming) return;
 
-        console.log(strftime(event.timestampUs - basetime));
+        console.log(directionPrefix(packet.incoming) + strftime(event.timestampUs - basetime));
 
         // dump in rtpdump format.
         var hex = packet.header.toString('hex');
@@ -76,9 +85,10 @@ events.stream.forEach(function(event) {
 
     case 4://'RTCP_EVENT':
         packet = event.rtcpPacket;
+        
         if (incoming !== undefined && incoming !== packet.incoming) return;
 
-        console.log(strftime(event.timestampUs - basetime));
+        console.log(directionPrefix(packet.incoming) + strftime(event.timestampUs - basetime));
 
         var hex = packet.packetData.toString('hex');
         var bytes = '';
