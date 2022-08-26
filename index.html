@@ -1,0 +1,136 @@
+<html>
+    <head>
+        <meta charset="utf-8">
+        <title>Import WebRTC Event log dumps and show some graphs</title>
+        <style>
+
+        </style>
+        <!-- highcharts is used under the terms of
+            http://shop.highsoft.com/faq/non-commercial
+        -->
+        <script src="https://code.highcharts.com/highcharts.js"></script>
+        <script src="https://cdn.rawgit.com/dcodeIO/protobuf.js/6.11.3/dist/protobuf.min.js"></script>
+    </head>
+    <body>
+        <form><input type="file" onchange="doImport(event)"></form>
+    </body>
+    <script>
+function doImport(evt) {
+    evt.target.disabled = true;
+    const stream = protoRoot.lookupType('webrtc.rtclog.EventStream');
+
+    const files = evt.target.files;
+    const reader = new FileReader();
+    reader.onload = ((file) => {
+        return (e) => {
+            const events = stream.decode(new Uint8Array(e.target.result));
+            events.stream.forEach(decode);
+            plot();
+        };
+    })(files[0]);
+    reader.readAsArrayBuffer(files[0]);
+}
+let protoRoot;
+const p = protobuf.load('rtc_event_log.proto', (err, root) => {
+    if (err) {
+        console.error(err);
+        return;
+    }
+    document.querySelector('input').disabled = false;
+    protoRoot = root;
+});
+
+let basetime;
+const bweProbeClusters = [];
+const bweProbeResults = [];
+const lossBasedUpdates = [];
+const delayBasedUpdates = [];
+function decode(event) {
+    // Use first packet in any direction as base time
+    switch(event.type) {
+        case 3: //'RTP_EVENT':
+        case 4: //'RTCP_EVENT':
+            // TODO: dump the packets and write a pcap.
+            if (basetime === undefined) {
+                basetime = event.timestampUs;
+            }
+            break;
+        case 5: // audio playout event, ignore
+            break;
+        case 6: // loss based bwe update
+            lossBasedUpdates.push([event.timestampUs, event.lossBasedBweUpdate.bitrateBps]);
+            break;
+        case 7: // delay based bwe update
+            delayBasedUpdates.push([event.timestampUs, event.delayBasedBweUpdate.bitrateBps]);
+            break;
+        case 17: // BweProbeCluster
+            bweProbeClusters.push({
+                x: event.timestampUs,
+                y: event.probeCluster.bitrateBps,
+                name: event.probeCluster.id,
+            });
+            break;
+        case 18: // BweProbeResult
+            bweProbeResults.push({
+                x: event.timestampUs,
+                y: event.probeResult.bitrateBps,
+                name: event.probeResult.id,
+            });
+            break;
+        default:
+            console.log(event.type, event);
+            break;
+    }
+}
+
+function plot() {
+    const d = document.createElement('div');
+    d.id = 'chart_' + Date.now();
+    d.classList.add('graph');
+    document.body.appendChild(d);
+    const graph = new Highcharts.Chart({
+        title: {
+            text: 'BWE probe results'
+        },
+        xAxis: {
+            type: 'datetime',
+        },
+        yAxis: {
+            min: 0,
+        },
+        plotOptions: {
+            scatter: {
+                dataLabels: {
+                    format: '{point.name}',
+                    enabled: true
+                },
+            }
+        },
+        chart: {
+            zoomType: 'x',
+            renderTo : d.id,
+        },
+        series: [
+            {
+                name: 'BWE probe clusters',
+                type: 'scatter',
+                data: bweProbeClusters,
+            },
+            {
+                name: 'BWE probe results',
+                type: 'scatter',
+                data: bweProbeResults,
+            },
+            {
+                name: "Loss based updates",
+                data: lossBasedUpdates,
+            },
+            {
+                name: "Delay based updates",
+                data: delayBasedUpdates,
+            }
+        ],
+    });
+}
+    </script>
+</html>
