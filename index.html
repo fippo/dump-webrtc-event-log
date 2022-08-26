@@ -1,7 +1,7 @@
 <html>
     <head>
         <meta charset="utf-8">
-        <title>Import WebRTC Event log dumps and show some graphs</title>
+        <title>Import WebRTC Event log dumps, show some graphs and download a pcap</title>
         <style>
 
         </style>
@@ -10,22 +10,28 @@
         -->
         <script src="https://code.highcharts.com/highcharts.js"></script>
         <script src="https://cdn.rawgit.com/dcodeIO/protobuf.js/6.11.3/dist/protobuf.min.js"></script>
+        <script src="pcap.js"></script>
     </head>
     <body>
         <form><input type="file" onchange="doImport(event)"></form>
+        <span id="download"></span>
+        <div id="graph"></div>
     </body>
     <script>
+let file;
 function doImport(evt) {
     evt.target.disabled = true;
     const stream = protoRoot.lookupType('webrtc.rtclog.EventStream');
 
     const files = evt.target.files;
+    file = files[0];
     const reader = new FileReader();
     reader.onload = ((file) => {
         return (e) => {
             const events = stream.decode(new Uint8Array(e.target.result));
             events.stream.forEach(decode);
             plot();
+            savePCAP();
         };
     })(files[0]);
     reader.readAsArrayBuffer(files[0]);
@@ -45,15 +51,14 @@ const bweProbeClusters = [];
 const bweProbeResults = [];
 const lossBasedUpdates = [];
 const delayBasedUpdates = [];
+const pcap = new PCAPWriter();
 function decode(event) {
-    // Use first packet in any direction as base time
     switch(event.type) {
         case 3: //'RTP_EVENT':
+            pcap.write(event.rtpPacket.header, event.rtpPacket.incoming, event.rtpPacket.packetLength, event.timestampUs);
+            break;
         case 4: //'RTCP_EVENT':
-            // TODO: dump the packets and write a pcap.
-            if (basetime === undefined) {
-                basetime = event.timestampUs;
-            }
+            pcap.write(event.rtcpPacket.packetData, event.rtcpPacket.incoming, event.rtcpPacket.packetData.byteLength, event.timestampUs);
             break;
         case 5: // audio playout event, ignore
             break;
@@ -78,16 +83,12 @@ function decode(event) {
             });
             break;
         default:
-            console.log(event.type, event);
+            //console.log(event.type, event);
             break;
     }
 }
 
 function plot() {
-    const d = document.createElement('div');
-    d.id = 'chart_' + Date.now();
-    d.classList.add('graph');
-    document.body.appendChild(d);
     const graph = new Highcharts.Chart({
         title: {
             text: 'BWE probe results'
@@ -108,7 +109,7 @@ function plot() {
         },
         chart: {
             zoomType: 'x',
-            renderTo : d.id,
+            renderTo : 'graph',
         },
         series: [
             {
@@ -131,6 +132,15 @@ function plot() {
             }
         ],
     });
+}
+function savePCAP() {
+    const blob = pcap.save();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = file.name + '.pcap';
+    a.innerText = 'Download PCAP';
+    document.getElementById('download').appendChild(a);
 }
     </script>
 </html>
