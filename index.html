@@ -29,7 +29,7 @@ function doImport(evt) {
     reader.onload = ((file) => {
         return (e) => {
             const events = stream.decode(new Uint8Array(e.target.result));
-            events.stream.forEach(decode);
+            events.stream.forEach((event) => decode(event, events.stream[0].timestampUs));
             plot();
             savePCAP();
         };
@@ -52,32 +52,33 @@ const bweProbeResults = [];
 const lossBasedUpdates = [];
 const delayBasedUpdates = [];
 const pcap = new PCAPWriter();
-function decode(event) {
+function decode(event, startTimeUs) {
+    const relativeTimeMs = (event.timestampUs - startTimeUs) / 1000;
     switch(event.type) {
         case 3: //'RTP_EVENT':
-            pcap.write(event.rtpPacket.header, event.rtpPacket.incoming, event.rtpPacket.packetLength, event.timestampUs);
+            pcap.write(event.rtpPacket.header, event.rtpPacket.incoming, event.rtpPacket.packetLength, relativeTimeMs);
             break;
         case 4: //'RTCP_EVENT':
-            pcap.write(event.rtcpPacket.packetData, event.rtcpPacket.incoming, event.rtcpPacket.packetData.byteLength, event.timestampUs);
+            pcap.write(event.rtcpPacket.packetData, event.rtcpPacket.incoming, event.rtcpPacket.packetData.byteLength, relativeTimeMs);
             break;
         case 5: // audio playout event, ignore
             break;
         case 6: // loss based bwe update
-            lossBasedUpdates.push([event.timestampUs, event.lossBasedBweUpdate.bitrateBps]);
+            lossBasedUpdates.push([relativeTimeMs, event.lossBasedBweUpdate.bitrateBps]);
             break;
         case 7: // delay based bwe update
-            delayBasedUpdates.push([event.timestampUs, event.delayBasedBweUpdate.bitrateBps]);
+            delayBasedUpdates.push([relativeTimeMs, event.delayBasedBweUpdate.bitrateBps]);
             break;
         case 17: // BweProbeCluster
             bweProbeClusters.push({
-                x: event.timestampUs,
+                x: relativeTimeMs,
                 y: event.probeCluster.bitrateBps,
                 name: event.probeCluster.id,
             });
             break;
         case 18: // BweProbeResult
             bweProbeResults.push({
-                x: event.timestampUs,
+                x: relativeTimeMs,
                 y: event.probeResult.bitrateBps,
                 name: event.probeResult.id,
             });
