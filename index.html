@@ -56,10 +56,10 @@ function decode(event, startTimeUs) {
     const relativeTimeMs = (event.timestampUs - startTimeUs) / 1000;
     switch(event.type) {
         case 3: //'RTP_EVENT':
-            pcap.write(event.rtpPacket.header, event.rtpPacket.incoming, event.rtpPacket.packetLength, relativeTimeMs);
+            pcap.write(event.rtpPacket.header, event.rtpPacket.incoming, event.rtpPacket.packetLength, event.timestampUs - startTimeUs);
             break;
         case 4: //'RTCP_EVENT':
-            pcap.write(event.rtcpPacket.packetData, event.rtcpPacket.incoming, event.rtcpPacket.packetData.byteLength, relativeTimeMs);
+            pcap.write(event.rtcpPacket.packetData, event.rtcpPacket.incoming, event.rtcpPacket.packetData.byteLength, event.timestampUs - startTimeUs);
             break;
         case 5: // audio playout event, ignore
             break;

@@ -42,12 +42,12 @@ class PCAPWriter {
         header.setUint32(20, 1); // Ethernet.
     }
 
-    write(packet, inbound, originalLength, timestamp) {
+    write(packet, inbound, originalLength, timestampUs) {
         this.buffers.push(new Uint8Array(16));
         // https://wiki.wireshark.org/Development/LibpcapFileFormat#record-packet-header
         const header = new DataView(this.buffers[this.buffers.length - 1].buffer);
-        header.setUint32(0, timestamp / 1000);
-        header.setUint32(4, timestamp % 1000);
+        header.setUint32(0, Math.floor(timestampUs / 1000000));
+        header.setUint32(4, timestampUs % 1000000);
         header.setUint32(8, packet.length + headerLength);
         header.setUint32(12, originalLength + headerLength);
         const fullPacket = new Uint8Array(headerLength + packet.byteLength);
