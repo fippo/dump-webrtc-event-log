@@ -27,9 +27,16 @@ function doImport(evt) {
     file = files[0];
     const reader = new FileReader();
     reader.onload = ((file) => {
+        // WebRTC-internals follows a certain format when creating the log file.
+        // Try to interpret it as the timestamp of the capture, other
+        let absolabsoluteStartTimeUsuteStartUs = 0;
+        const dateMatch = file.name.match(/.*_(\d\d\d\d)(\d\d)(\d\d)_(\d\d)(\d\d)_(\d+)_.*.log/);
+        if (dateMatch) {
+            absoluteStartTimeUs = new Date(dateMatch[1], dateMatch[2], dateMatch[3], dateMatch[4], dateMatch[5], dateMatch[6]).getTime() * 1000;
+        }
         return (e) => {
             const events = stream.decode(new Uint8Array(e.target.result));
-            events.stream.forEach((event) => decode(event, events.stream[0].timestampUs));
+            events.stream.forEach((event) => decode(event, events.stream[0].timestampUs, absoluteStartTimeUs));
             plot();
             savePCAP();
         };
@@ -52,36 +59,39 @@ const bweProbeResults = [];
 const lossBasedUpdates = [];
 const delayBasedUpdates = [];
 const pcap = new PCAPWriter();
-function decode(event, startTimeUs) {
+function decode(event, startTimeUs, absoluteStartTimeUs) {
     const relativeTimeMs = (event.timestampUs - startTimeUs) / 1000;
+    const absoluteTimeMs = absoluteStartTimeUs / 1000 + relativeTimeMs;
     switch(event.type) {
         case 3: //'RTP_EVENT':
-            pcap.write(event.rtpPacket.header, event.rtpPacket.incoming, event.rtpPacket.packetLength, event.timestampUs - startTimeUs);
+            pcap.write(event.rtpPacket.header, event.rtpPacket.incoming, event.rtpPacket.packetLength, absoluteStartTimeUs + event.timestampUs - startTimeUs);
             break;
         case 4: //'RTCP_EVENT':
-            pcap.write(event.rtcpPacket.packetData, event.rtcpPacket.incoming, event.rtcpPacket.packetData.byteLength, event.timestampUs - startTimeUs);
+            pcap.write(event.rtcpPacket.packetData, event.rtcpPacket.incoming, event.rtcpPacket.packetData.byteLength, absoluteStartTimeUs + event.timestampUs - startTimeUs);
             break;
         case 5: // audio playout event, ignore
             break;
         case 6: // loss based bwe update
-            lossBasedUpdates.push([relativeTimeMs, event.lossBasedBweUpdate.bitrateBps]);
+            lossBasedUpdates.push([absoluteTimeMs, event.lossBasedBweUpdate.bitrateBps]);
             break;
         case 7: // delay based bwe update
-            delayBasedUpdates.push([relativeTimeMs, event.delayBasedBweUpdate.bitrateBps]);
+            delayBasedUpdates.push([absoluteTimeMs, event.delayBasedBweUpdate.bitrateBps]);
             break;
         case 17: // BweProbeCluster
             bweProbeClusters.push({
-                x: relativeTimeMs,
+                x: absoluteTimeMs,
                 y: event.probeCluster.bitrateBps,
                 name: event.probeCluster.id,
             });
             break;
         case 18: // BweProbeResult
             bweProbeResults.push({
-                x: relativeTimeMs,
+                x: absoluteTimeMs,
                 y: event.probeResult.bitrateBps,
                 name: event.probeResult.id,
             });
+            break;
+        case 19: // AlrState
             break;
         default:
             //console.log(event.type, event);
