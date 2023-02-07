@@ -59,12 +59,25 @@ const bweProbeResults = [];
 const lossBasedUpdates = [];
 const delayBasedUpdates = [];
 const pcap = new PCAPWriter();
+const perSsrcByteCount = {};
+const bitrateSeries = {};
 function decode(event, startTimeUs, absoluteStartTimeUs) {
     const relativeTimeMs = (event.timestampUs - startTimeUs) / 1000;
     const absoluteTimeMs = absoluteStartTimeUs / 1000 + relativeTimeMs;
     switch(event.type) {
         case 3: //'RTP_EVENT':
             pcap.write(event.rtpPacket.header, event.rtpPacket.incoming, event.rtpPacket.packetLength, absoluteStartTimeUs + event.timestampUs - startTimeUs);
+            // TODO: reuse the bitrate calculation code from rtcshark
+            const ssrc = new DataView(event.rtpPacket.header.buffer, event.rtpPacket.header.byteOffset, event.rtpPacket.header.byteLength).getUint32(8);
+            if (!perSsrcByteCount[ssrc]) {
+                perSsrcByteCount[ssrc] = [0, relativeTimeMs];
+                bitrateSeries[ssrc] = [[absoluteTimeMs, 0]];
+            }
+            perSsrcByteCount[ssrc][0] += event.rtpPacket.packetLength - event.rtpPacket.header.byteLength;
+            if (relativeTimeMs - perSsrcByteCount[ssrc][1] > 1000) {
+                bitrateSeries[ssrc].push([absoluteTimeMs, 8000 * perSsrcByteCount[ssrc][0] / (relativeTimeMs - perSsrcByteCount[ssrc][1])]);
+                perSsrcByteCount[ssrc] = [0, relativeTimeMs];
+            }
             break;
         case 4: //'RTCP_EVENT':
             pcap.write(event.rtcpPacket.packetData, event.rtcpPacket.incoming, event.rtcpPacket.packetData.byteLength, absoluteStartTimeUs + event.timestampUs - startTimeUs);
@@ -142,6 +155,12 @@ function plot() {
                 data: delayBasedUpdates,
             }
         ],
+    });
+    Object.keys(bitrateSeries).forEach(ssrc => {
+        graph.addSeries({
+            name: 'average bitrate ssrc=0x' + ssrc.toString(16),
+            data: bitrateSeries[ssrc],
+        });
     });
 }
 function savePCAP() {
