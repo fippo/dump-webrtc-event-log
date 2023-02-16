@@ -55,6 +55,38 @@ const p = protobuf.load('rtc_event_log.proto', (err, root) => {
     protoRoot = root;
 });
 
+const graph = new Highcharts.Chart({
+    title: false,
+    xAxis: {
+        type: 'datetime',
+    },
+    yAxis: [{
+        min: 0,
+    }, {
+        min: 0,
+        max: 100,
+        title: {
+            text: '%',
+        },
+        labels: {
+            format: '{value}%'
+        },
+        opposite: true,
+    }],
+    plotOptions: {
+        scatter: {
+            dataLabels: {
+                format: '{point.name}',
+                enabled: true
+            },
+        }
+    },
+    chart: {
+        zoomType: 'x',
+        renderTo : 'graph',
+    },
+});
+
 let basetime;
 const bweProbeClusters = [];
 const bweProbeResults = [];
@@ -128,7 +160,7 @@ function decode(event, startTimeUs, absoluteStartTimeUs) {
                     while (offset + 24 <= view.byteLength) {
                         reports.push({
                             synchronizationSource: view.getUint32(offset),
-                            fractionLost: view.getUint8(offset + 4) / 256.0,
+                            fractionLost: Math.floor(view.getUint8(offset + 4) / 256.0 * 100),
                         });
                         offset += 24;
                     }
@@ -179,71 +211,50 @@ function decode(event, startTimeUs, absoluteStartTimeUs) {
 }
 
 function plot() {
-    const graph = new Highcharts.Chart({
-        title: false,
-        xAxis: {
-            type: 'datetime',
+    [
+        {
+            name: 'BWE probe clusters',
+            type: 'scatter',
+            data: bweProbeClusters,
         },
-        yAxis: {
-            min: 0,
+        {
+            name: 'BWE probe results',
+            type: 'scatter',
+            data: bweProbeResults,
         },
-        plotOptions: {
-            scatter: {
-                dataLabels: {
-                    format: '{point.name}',
-                    enabled: true
-                },
-            }
+        {
+            name: 'Loss based updates',
+            data: lossBasedUpdates,
+            step: 'left',
+            dashStyle: 'Dash',
         },
-        chart: {
-            zoomType: 'x',
-            renderTo : 'graph',
+        {
+            name: 'Delay based updates',
+            data: delayBasedUpdates,
+            step: 'left',
+            dashStyle: 'Dash',
         },
-        series: [
-            {
-                name: 'BWE probe clusters',
-                type: 'scatter',
-                data: bweProbeClusters,
-            },
-            {
-                name: 'BWE probe results',
-                type: 'scatter',
-                data: bweProbeResults,
-            },
-            {
-                name: 'Loss based updates',
-                data: lossBasedUpdates,
-                step: 'left',
-                dashStyle: 'Dash',
-            },
-            {
-                name: 'Delay based updates',
-                data: delayBasedUpdates,
-                step: 'left',
-                dashStyle: 'Dash',
-            },
-            {
-                name: 'Inbound REMB',
-                type: 'scatter',
-                data: rembValues['inbound'],
-            },
-            {
-                name: 'Outbound REMB',
-                type: 'scatter',
-                data: rembValues['outbound'],
-            },
-            {
-                name: 'Inbound RTCP PLI (picture loss indication)',
-                type: 'scatter',
-                data: pictureLossIndications['inbound'],
-            },
-            {
-                name: 'Outbound RTCP PLI (picture loss indication)',
-                type: 'scatter',
-                data: pictureLossIndications['outbound'],
-            },
-        ],
-    });
+        {
+            name: 'Inbound REMB',
+            type: 'scatter',
+            data: rembValues['inbound'],
+        },
+        {
+            name: 'Outbound REMB',
+            type: 'scatter',
+            data: rembValues['outbound'],
+        },
+        {
+            name: 'Inbound RTCP PLI (picture loss indication)',
+            type: 'scatter',
+            data: pictureLossIndications['inbound'],
+        },
+        {
+            name: 'Outbound RTCP PLI (picture loss indication)',
+            type: 'scatter',
+            data: pictureLossIndications['outbound'],
+        },
+    ].forEach(series => graph.addSeries(series));
     Object.keys(bitrateSeries).forEach(ssrc => {
         graph.addSeries({
             name: 'average bitrate ssrc=' + ssrc + ' ' + (bitrateSeries[ssrc].incoming ? 'inbound' : 'outbound'),
@@ -254,6 +265,7 @@ function plot() {
         graph.addSeries({
             name: 'RTCP RR loss percentage ssrc=' + ssrc,
             data: rtcpReceiverReport[ssrc],
+            yAxis: 1,
         });
     });
     const toggle = document.getElementById('toggle');
