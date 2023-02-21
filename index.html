@@ -1,7 +1,7 @@
 <html>
     <head>
         <meta charset="utf-8">
-        <title>Import WebRTC Event log dumps, show some graphs and download a pcap</title>
+        <title>Import WebRTC event log dumps, show some graphs and download a pcap</title>
         <style>
 
         </style>
@@ -14,36 +14,39 @@
         <script src="pcap.js"></script>
     </head>
     <body>
-        <form><input type="file" onchange="doImport(event)"></form>
+        <form>
+            <label>Select a WebRTC-internals event log dump:</label>
+            <input type="file" onchange="doImport(event)">
+        </form>
         <span id="download"></span>
+        <br>
         <div id="graph"></div>
         <input type="checkbox" id="toggle" disabled><label>Toggle all data series</label>
     </body>
     <script>
 let file;
-function doImport(evt) {
-    evt.target.disabled = true;
+function doImport(event) {
+    event.target.disabled = true;
     const stream = protoRoot.lookupType('webrtc.rtclog.EventStream');
 
-    const files = evt.target.files;
-    file = files[0];
+    let absoluteStartTimeUs = 0;
+    const dateMatch = event.target.files[0].name.match(/.*_(\d\d\d\d)(\d\d)(\d\d)_(\d\d)(\d\d)_(\d+)_.*.log/);
+    if (dateMatch) {
+        absoluteStartTimeUs = new Date(dateMatch[1], dateMatch[2], dateMatch[3], dateMatch[4], dateMatch[5], dateMatch[6]).getTime() * 1000;
+    }
+
     const reader = new FileReader();
     reader.onload = ((file) => {
         // WebRTC-internals follows a certain format when creating the log file.
         // Try to interpret it as the timestamp of the capture, other
-        let absoluteStartTimeUs = 0;
-        const dateMatch = file.name.match(/.*_(\d\d\d\d)(\d\d)(\d\d)_(\d\d)(\d\d)_(\d+)_.*.log/);
-        if (dateMatch) {
-            absoluteStartTimeUs = new Date(dateMatch[1], dateMatch[2], dateMatch[3], dateMatch[4], dateMatch[5], dateMatch[6]).getTime() * 1000;
-        }
         return (e) => {
             const events = stream.decode(new Uint8Array(e.target.result));
             events.stream.forEach((event) => decode(event, events.stream[0].timestampUs, absoluteStartTimeUs));
             plot();
-            savePCAP();
+            savePCAP(file.name);
         };
-    })(files[0]);
-    reader.readAsArrayBuffer(files[0]);
+    })(event.target.files[0]);
+    reader.readAsArrayBuffer(event.target.files[0]);
 }
 let protoRoot;
 const p = protobuf.load('rtc_event_log.proto', (err, root) => {
@@ -276,14 +279,14 @@ function plot() {
         graph.redraw();
     };
     toggle.disabled = false;
-    window.graph = graph;
 }
-function savePCAP() {
+
+function savePCAP(filename) {
     const blob = pcap.save();
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = file.name + '.pcap';
+    a.download = filename + '.pcap';
     a.innerText = 'Download PCAP';
     document.getElementById('download').appendChild(a);
 }
