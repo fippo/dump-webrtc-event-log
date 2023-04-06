@@ -79,11 +79,16 @@ const rembValues = {
     inbound: [],
     outbound: [],
 };
+const twccValues = {
+    inbound: [],
+    outbound: [],
+};
 const pictureLossIndicationsInbound = [];
 const rtcpReceiverReport = {};
 const pcap = new PCAPWriter();
 const perSsrcByteCount = {};
 const bitrateSeries = {};
+
 
 function decode(event, startTimeUs, absoluteStartTimeUs) {
     const relativeTimeMs = (event.timestampUs - startTimeUs) / 1000;
@@ -92,6 +97,7 @@ function decode(event, startTimeUs, absoluteStartTimeUs) {
         case 3: //'RTP_EVENT':
             pcap.write(event.rtpPacket.header, event.rtpPacket.incoming, event.rtpPacket.packetLength, absoluteStartTimeUs + event.timestampUs - startTimeUs);
             // TODO: reuse the bitrate calculation code from rtcshark
+            // Per-SSRC bitrate graphs.
             const ssrc = new DataView(event.rtpPacket.header.buffer, event.rtpPacket.header.byteOffset, event.rtpPacket.header.byteLength).getUint32(8);
             if (!perSsrcByteCount[ssrc]) {
                 perSsrcByteCount[ssrc] = [0, relativeTimeMs];
@@ -103,6 +109,18 @@ function decode(event, startTimeUs, absoluteStartTimeUs) {
             if (relativeTimeMs - perSsrcByteCount[ssrc][1] > 1000) {
                 bitrateSeries[ssrc].push([absoluteTimeMs, 8000 * perSsrcByteCount[ssrc][0] / (relativeTimeMs - perSsrcByteCount[ssrc][1])]);
                 perSsrcByteCount[ssrc] = [0, relativeTimeMs];
+            }
+
+            // Cumulated bitrate graphs.
+            const direction = event.rtpPacket.incoming ? 'total_incoming' : 'total_outgoing'
+            if (!perSsrcByteCount[direction]) {
+                perSsrcByteCount[direction] = [0, relativeTimeMs];
+                bitrateSeries[direction] = [[absoluteTimeMs, 0]];
+            }
+            perSsrcByteCount[direction][0] += event.rtpPacket.packetLength - event.rtpPacket.header.byteLength;
+            if (relativeTimeMs - perSsrcByteCount[direction][1] > 1000) {
+                bitrateSeries[direction].push([absoluteTimeMs, 8000 * perSsrcByteCount[direction][0] / (relativeTimeMs - perSsrcByteCount[direction][1])]);
+                perSsrcByteCount[direction] = [0, relativeTimeMs];
             }
             break;
         case 4: //'RTCP_EVENT':
@@ -156,6 +174,20 @@ function decode(event, startTimeUs, absoluteStartTimeUs) {
                             })
                         });
                     }
+                }},
+                {payloadType: RTCP.PT_RTPFB, feedbackMessageType: RTCP.FMT_ALFB, filter: (decoded, packet, offset, length) => {
+                    const direction = event.rtcpPacket.incoming ? 'inbound' : 'outbound';
+                    const result = RTCP.decodeTransportCC(packet, offset);
+                    if (!result) {
+                        return;
+                    }
+                    const lost = result.delta.reduce((count, delta) => delta === false ? count + 1 : count, 0);
+                    if (lost === 0) return;
+                    twccValues[direction].push({
+                        x: absoluteTimeMs,
+                        y: Math.floor(100 * lost / result.delta.length),
+                        name: 'baseSeq=' + result.baseSequenceNumber
+                    });
                 }},
             );
             break;
@@ -233,19 +265,31 @@ function plot() {
             type: 'scatter',
             data: pictureLossIndications['outbound'],
         },
-    ].forEach(series => graph.addSeries(series));
+        {
+            name: 'Outbound TWCC Loss Percentage > 0',
+            type: 'scatter',
+            data: twccValues['outbound'],
+            yAxis: 1,
+        },
+        {
+            name: 'Inbound TWCC Loss Percentage > 0',
+            type: 'scatter',
+            data: twccValues['inbound'],
+            yAxis: 1,
+        },
+    ].forEach(series => graph.addSeries(series, false));
     Object.keys(bitrateSeries).forEach(ssrc => {
         graph.addSeries({
             name: 'average bitrate ssrc=' + ssrc + ' ' + (bitrateSeries[ssrc].incoming ? 'inbound' : 'outbound'),
             data: bitrateSeries[ssrc],
-        });
+        }, false);
     });
     Object.keys(rtcpReceiverReport).forEach(ssrc => {
         graph.addSeries({
             name: 'RTCP RR loss percentage ssrc=' + ssrc,
             data: rtcpReceiverReport[ssrc],
             yAxis: 1,
-        });
+        }, false);
     });
     const toggle = document.getElementById('toggle');
     toggle.onchange = () => {
@@ -255,6 +299,7 @@ function plot() {
         graph.redraw();
     };
     toggle.disabled = false;
+    graph.redraw();
 }
 
 function savePCAP(filename) {
