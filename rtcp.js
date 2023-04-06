@@ -79,4 +79,84 @@ class RTCP {
         }
         return true;
     }
+
+    static decodeTransportCC(packet, offset) {
+        if (packet.length < offset + 20) {
+            console.error('overflow in transport-cc');
+            return;
+        }
+        const view = new DataView(packet.buffer, packet.byteOffset + offset, packet.byteLength - offset);
+
+        const baseSequenceNumber = view.getUint16(12);
+        const count = view.getUint16(14);
+        const referenceTime_ms = (view.getInt32(16) >> 8) * 64;
+        const feedbackPacketIndex = view.getUint8(16 + 3);
+        const result = {
+            baseSequenceNumber,
+            referenceTime_ms,
+            feedbackPacketIndex,
+            delta: new Array(count),
+        };
+
+        offset = 20;
+        const delta_sizes = [];
+        const chunks = [];
+        while(delta_sizes.length < count) {
+            if (offset + 2 > view.byteLength) {
+                console.error('overflow in transport-cc');
+                return;
+            }
+            const chunk = view.getUint16(offset);
+            chunks.push(chunk);
+            if (chunk & 0x8000) {
+                // https://datatracker.ietf.org/doc/html/draft-holmer-rmcat-transport-wide-cc-extensions-01#section-3.1.4
+                // Note that we can get at most count chunks
+                if (chunk & 0x4000) {
+                    // Two bit variant.
+                    for (let i = 0; i < Math.min(count, 7); i++) {
+                        delta_sizes.push((chunk >> (2 * (7 - 1 - i)) & 0x03));
+                    }
+                } else {
+                    // single bit variant.
+                    for (let i = 0; i < Math.min(count, 14); i++) {
+                        delta_sizes.push((chunk >> (14 - 1 - i)) & 0x01);
+                    }
+                }
+            } else {
+                // https://datatracker.ietf.org/doc/html/draft-holmer-rmcat-transport-wide-cc-extensions-01#section-3.1.3
+                for (let i = 0; i < Math.min(count, chunk & 0x1fff); i++) {
+                    delta_sizes.push((chunk >> 13) & 0x03);
+                }
+            }
+            offset += 2;
+        }
+        const recv_delta_size = delta_sizes.reduce((a, b) => a + b, 0);
+        if (offset + recv_delta_size > view.byteLength) {
+            console.error('overflow in transport-cc');
+            return;
+        }
+        for(let i = 0; i < delta_sizes.length; i++) {
+            const delta_size = delta_sizes[i];
+            // delta size is the status symbol:
+            // https://datatracker.ietf.org/doc/html/draft-holmer-rmcat-transport-wide-cc-extensions-01#section-3.1.1
+            let delta;
+            switch(delta_size) {
+            case 0:
+                delta = false;
+                break;
+            case 1:
+                delta = view.getUint8(offset) * 250;
+                break;
+            case 2:
+                delta = view.getInt16(offset) * 250;
+                break;
+            default:
+                console.log('TODO', delta_size);
+                break;
+            }
+            result.delta[i] = delta;
+            offset += delta_size;
+        }
+        return result;
+    }
 }
