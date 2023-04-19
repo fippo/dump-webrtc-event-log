@@ -276,8 +276,17 @@ function plot() {
             type: 'scatter',
             data: twccValues['inbound'],
             yAxis: 1,
-        },
-    ].forEach(series => graph.addSeries(series, false));
+        }
+    ].map(series => {
+        // Avoid hitting https://api.highcharts.com/highcharts/plotOptions.series.turboThreshold
+        // for large scatter plots
+        if (series.type === 'scatter' && series.data.length > 500) {
+            console.log('Trimming `' + series.name + '`');
+            delete series.type;
+            series.data = series.data.map(point => [point.x, point.y]);
+        }
+        return series;
+    }).forEach(series => graph.addSeries(series, false));
     Object.keys(bitrateSeries).forEach(ssrc => {
         graph.addSeries({
             name: 'average bitrate ssrc=' + ssrc + ' ' + (bitrateSeries[ssrc].incoming ? 'inbound' : 'outbound'),
