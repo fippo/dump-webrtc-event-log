@@ -162,6 +162,55 @@ const pcap = new PCAPWriter();
 const perSsrcByteCount = {};
 const bitrateSeries = {};
 
+const sendTimes = [];
+const receiveTimes = [];
+// https://datatracker.ietf.org/doc/html/draft-ietf-rmcat-gcc#section-5.1
+const d_i = [];
+let lastSequenceNumber;
+function forEachExtension(packet, cb) {
+    const view = new DataView(packet.buffer, packet.byteOffset, packet.byteLength);
+    if (view.byteLength < 12) {
+        return false;
+    }
+    const first = view.getUint8(0);
+    if (first >> 6 !== 2) {
+        return false;
+    }
+
+    let headerLength = 12 + 4 * (first & 0x0f); // 12 + 4 * csrc count
+    if (!first & 0x10) {
+        return false;
+    }
+    // https://tools.ietf.org/html/rfc3550#section-5.3.1
+    if (headerLength + 4 > view.byteLength) {
+        return;
+    }
+    let offset = headerLength + 4;
+    headerLength += 4 + 4 * view.getUint16(headerLength + 2);
+    if (headerLength > view.byteLength) {
+        return false;
+    }
+    const headerExtensionSize = headerLength;
+
+    // Parse the header extensions.
+    while (offset < headerExtensionSize) {
+        if (offset + 1 > headerExtensionSize) {
+            return false;
+        }
+        const extensionHeader = view.getUint8(offset);
+        const extensionId = extensionHeader >> 4;
+        const extensionLength = 1 + (extensionHeader & 0xf);
+        if (extensionId === 0) {
+            break;
+        }
+        if (offset + 1 + extensionLength > headerExtensionSize) {
+            return false;
+        }
+        cb(extensionId, new DataView(view.buffer, view.byteOffset + offset + 1, extensionLength));
+        offset += 1 + extensionLength;
+    }
+}
+
 function decodeLegacy(event, startTimeUs, absoluteStartTimeUs) {
     const relativeTimeMs = (event.timestampUs - startTimeUs) / 1000;
     const absoluteTimeMs = absoluteStartTimeUs / 1000 + relativeTimeMs;
@@ -206,6 +255,12 @@ function decodeLegacy(event, startTimeUs, absoluteStartTimeUs) {
                         bweProbeClusterToPackets[cluster].push([data.getUint16(0), event.rtpPacket.packetLength]);
                     }
                 }});
+                // Note send times.
+                forEachExtension(event.rtpPacket.header, (extensionId, data) => {
+                    if (extensionId === twccId[ssrc]) {
+                        sendTimes.push([data.getUint16(0), absoluteTimeMs]);
+                    }
+                });
             }
             break;
         case 4: //'RTCP_EVENT':
@@ -348,6 +403,22 @@ function decodeLegacy(event, startTimeUs, absoluteStartTimeUs) {
                     const result = RTCP.decodeTransportCC(view);
                     if (!result) {
                         return;
+                    }
+                    if (event.rtcpPacket.incoming) {
+                        // Note receive times.
+                        let total = 0;
+                        const totalDelta = result.delta.forEach((delta, i) => {
+                            total += delta;
+                            receiveTimes.push([result.baseSequenceNumber + i, result.referenceTime_ms + total / 1000]);
+                        });
+                        if (lastSequenceNumber) {
+                            const Ti = sendTimes.find(item => item[0] === result.baseSequenceNumber + result.delta.length - 2)[1];
+                            const Ti_1 = sendTimes.find(item => item[0] === lastSequenceNumber)[1];
+                            const ti = receiveTimes.find(item => item[0] === result.baseSequenceNumber + result.delta.length - 2)[1];
+                            const ti_1 = receiveTimes.find(item => item[0] === lastSequenceNumber)[1];
+                            d_i.push([Ti, ti - ti_1 - (Ti - Ti_1)]);
+                        }
+                        lastSequenceNumber = result.baseSequenceNumber + result.delta.length - 1;
                     }
                     const lost = result.delta.reduce((count, delta) => delta === false ? count + 1 : count, 0);
                     if (lost === 0) return;
@@ -505,6 +576,38 @@ function plot() {
         graph.redraw();
     };
     toggle.disabled = false;
+    /*
+    graph.addSeries({
+        name: 'sendTimes',
+        type: 'scatter',
+        data: sendTimes.sort((a, b) => a[0] - b[0])
+            .map(item => [item[0], item[1] - sendTimes[0][1]]),
+    }, false);
+    graph.addSeries({
+        name: 'sendDelta',
+        type: 'scatter',
+        data: sendTimes.sort((a, b) => a[0] - b[0])
+            .map((item, i) => [item[0], i === 0 ? 0 : sendTimes[i][1] - sendTimes[i - 1][1]]),
+    }, false);
+    graph.addSeries({
+        name: 'receiveTimes',
+        type: 'scatter',
+        data: receiveTimes.sort((a, b) => a[0] - b[0])
+            .map(item => [item[0], item[1] - receiveTimes[0][1]]),
+    }, false);
+    graph.addSeries({
+        name: 'receiveDelta',
+        type: 'scatter',
+        data: receiveTimes.sort((a, b) => a[0] - b[0])
+            .map((item, i) => [item[0], i === 0 ? 0 : receiveTimes[i][1] - receiveTimes[i - 1][1]]),
+    }, false);
+    */
+    graph.addSeries({
+        name: 'Intergroup delay d_i',
+        type: 'scatter',
+        data: d_i.sort((a, b) => a[0] - b[0]),
+        yAxis: 1,
+    }, false);
     graph.redraw();
 }
 
