@@ -88,7 +88,7 @@ class RTCP {
         const view = new DataView(packet.buffer, packet.byteOffset + offset, packet.byteLength - offset);
 
         const baseSequenceNumber = view.getUint16(12);
-        const count = view.getUint16(14);
+        let count = view.getUint16(14);
         const referenceTime_ms = (view.getInt32(16) >> 8) * 64;
         const feedbackPacketIndex = view.getUint8(16 + 3);
         const result = {
@@ -101,7 +101,7 @@ class RTCP {
         offset = 20;
         const delta_sizes = [];
         const chunks = [];
-        while(delta_sizes.length < count) {
+        while(delta_sizes.length < result.delta.length) {
             if (offset + 2 > view.byteLength) {
                 console.error('overflow in transport-cc');
                 return;
@@ -116,17 +116,20 @@ class RTCP {
                     for (let i = 0; i < Math.min(count, 7); i++) {
                         delta_sizes.push((chunk >> (2 * (7 - 1 - i)) & 0x03));
                     }
+                    count -= Math.min(count, 7);
                 } else {
                     // single bit variant.
                     for (let i = 0; i < Math.min(count, 14); i++) {
                         delta_sizes.push((chunk >> (14 - 1 - i)) & 0x01);
                     }
+                    count -= Math.min(count, 14);
                 }
             } else {
                 // https://datatracker.ietf.org/doc/html/draft-holmer-rmcat-transport-wide-cc-extensions-01#section-3.1.3
                 for (let i = 0; i < Math.min(count, chunk & 0x1fff); i++) {
                     delta_sizes.push((chunk >> 13) & 0x03);
                 }
+                count -= Math.min(count, chunk & 0x1fff);
             }
             offset += 2;
         }
