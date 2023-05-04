@@ -2,7 +2,6 @@
 let file;
 function doImport(event) {
     event.target.disabled = true;
-    const stream = protoRoot.lookupType('webrtc.rtclog.EventStream');
 
     let absoluteStartTimeUs = 0;
     const dateMatch = event.target.files[0].name.match(/.*_(\d\d\d\d)(\d\d)(\d\d)_(\d\d)(\d\d)_(\d+)_.*.log/);
@@ -10,28 +9,50 @@ function doImport(event) {
         absoluteStartTimeUs = new Date(dateMatch[1], dateMatch[2], dateMatch[3], dateMatch[4], dateMatch[5], dateMatch[6]).getTime() * 1000;
     }
 
-    const reader = new FileReader();
+        const reader = new FileReader();
     reader.onload = ((file) => {
         // WebRTC-internals follows a certain format when creating the log file.
         // Try to interpret it as the timestamp of the capture, other
         return (e) => {
-            const events = stream.decode(new Uint8Array(e.target.result));
-            events.stream.forEach((event) => decode(event, events.stream[0].timestampUs, absoluteStartTimeUs));
-            plot();
-            savePCAP(file.name);
+            const events = protoRootV2.lookupType('webrtc.rtclog2.EventStream').decode(new Uint8Array(e.target.result));
+            if (events.stream.length > 0) { // legacy file format.
+                const legacy = protoRootV1.lookupType('webrtc.rtclog.EventStream').decode(new Uint8Array(e.target.result));
+                legacy.stream.forEach((event) => decodeLegacy(event, legacy.stream[0].timestampUs, absoluteStartTimeUs));
+                plot();
+                savePCAP(file.name);
+                return;
+            }
+            // TODO: interpret the new format.
         };
     })(event.target.files[0]);
     reader.readAsArrayBuffer(event.target.files[0]);
 }
 
-let protoRoot;
-const p = protobuf.load('rtc_event_log.proto', (err, root) => {
-    if (err) {
-        console.error(err);
-        return;
-    }
+let protoRootV1;
+let protoRootV2;
+Promise.all([
+    new Promise(resolve => {
+        protobuf.load('rtc_event_log.proto', (err, root) => {
+            if (err) {
+                console.error(err);
+                return;
+            }
+            protoRootV1 = root;
+            resolve();
+        });
+    }),
+    new Promise(resolve => {
+        protobuf.load('rtc_event_log2.proto', (err, root) => {
+            if (err) {
+                console.error(err);
+                return;
+            }
+
+            protoRootV2 = root;
+        });
+    }),
+]).then(() => {
     document.querySelector('input').disabled = false;
-    protoRoot = root;
 });
 
 const graph = new Highcharts.Chart({
@@ -90,7 +111,7 @@ const perSsrcByteCount = {};
 const bitrateSeries = {};
 
 
-function decode(event, startTimeUs, absoluteStartTimeUs) {
+function decodeLegacy(event, startTimeUs, absoluteStartTimeUs) {
     const relativeTimeMs = (event.timestampUs - startTimeUs) / 1000;
     const absoluteTimeMs = absoluteStartTimeUs / 1000 + relativeTimeMs;
     switch(event.type) {
