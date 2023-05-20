@@ -3,19 +3,19 @@ let file;
 function doImport(event) {
     event.target.disabled = true;
 
-    let absoluteStartTimeUs = 0;
-    const dateMatch = event.target.files[0].name.match(/.*_(\d\d\d\d)(\d\d)(\d\d)_(\d\d)(\d\d)_(\d+)_.*.log/);
-    if (dateMatch) {
-        absoluteStartTimeUs = new Date(dateMatch[1], dateMatch[2], dateMatch[3], dateMatch[4], dateMatch[5], dateMatch[6]).getTime() * 1000;
-    }
-
-        const reader = new FileReader();
+    const reader = new FileReader();
     reader.onload = ((file) => {
         // WebRTC-internals follows a certain format when creating the log file.
         // Try to interpret it as the timestamp of the capture, other
         return (e) => {
             const events = protoRootV2.lookupType('webrtc.rtclog2.EventStream').decode(new Uint8Array(e.target.result));
             if (events.stream.length > 0) { // legacy file format.
+                let absoluteStartTimeUs = 0;
+                const dateMatch = event.target.files[0].name.match(/.*_(\d\d\d\d)(\d\d)(\d\d)_(\d\d)(\d\d)_(\d+)_.*.log/);
+                if (dateMatch) {
+                    absoluteStartTimeUs = new Date(dateMatch[1], dateMatch[2], dateMatch[3], dateMatch[4], dateMatch[5], dateMatch[6]).getTime() * 1000;
+                }
+
                 const legacy = protoRootV1.lookupType('webrtc.rtclog.EventStream').decode(new Uint8Array(e.target.result));
                 legacy.stream.forEach((event) => decodeLegacy(event, legacy.stream[0].timestampUs, absoluteStartTimeUs));
                 plot();
@@ -23,6 +23,14 @@ function doImport(event) {
                 return;
             }
             // TODO: interpret the new format.
+            console.log('NEW FORMAT', events);
+            // Start (stop) time is in events.beginLogEvents[0].utcTimeMs / endLogEvents (relative?)
+            // ĐTLS events (connected)
+            // ProbeClusters / ProbeSuccess / ProbeFailure
+            // RemoteEstimates (REMB)
+            // DecodeDeltas:
+            // https://source.chromium.org/chromium/chromium/src/+/refs/heads/main:third_party/webrtc/logging/rtc_event_log/encoder/delta_encoding.cc;drc=a129ef22074b9f81f549ff068a15fc320072b3bb;l=807
+            window.events = events;
         };
     })(event.target.files[0]);
     reader.readAsArrayBuffer(event.target.files[0]);
