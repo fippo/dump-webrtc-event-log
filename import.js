@@ -13,7 +13,7 @@ function doImport(event) {
                 let absoluteStartTimeUs = 0;
                 const dateMatch = event.target.files[0].name.match(/.*_(\d\d\d\d)(\d\d)(\d\d)_(\d\d)(\d\d)_(\d+)_.*.log/);
                 if (dateMatch) {
-                    absoluteStartTimeUs = new Date(dateMatch[1], dateMatch[2], dateMatch[3], dateMatch[4], dateMatch[5], dateMatch[6]).getTime() * 1000;
+                    absoluteStartTimeUs = new Date(dateMatch[1], parseInt(dateMatch[2], 10) - 1, dateMatch[3], dateMatch[4], dateMatch[5], dateMatch[6]).getTime() * 1000;
                 }
 
                 const legacy = protoRootV1.lookupType('webrtc.rtclog.EventStream').decode(new Uint8Array(e.target.result));
