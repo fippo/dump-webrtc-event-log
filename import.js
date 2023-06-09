@@ -122,6 +122,7 @@ const bitrateSeries = {};
 function decodeLegacy(event, startTimeUs, absoluteStartTimeUs) {
     const relativeTimeMs = (event.timestampUs - startTimeUs) / 1000;
     const absoluteTimeMs = absoluteStartTimeUs / 1000 + relativeTimeMs;
+    const absoluteTimeUs = absoluteStartTimeUs + (event.timestampUs - startTimeUs);
     switch(event.type) {
         case 3: //'RTP_EVENT':
             pcap.write(event.rtpPacket.header, event.rtpPacket.incoming, event.rtpPacket.packetLength, absoluteStartTimeUs + event.timestampUs - startTimeUs);
@@ -236,10 +237,11 @@ function decodeLegacy(event, startTimeUs, absoluteStartTimeUs) {
             });
             break;
         case 18: // BweProbeResult
+            const probeCluster = bweProbeClusters.find(c => c.name === event.probeResult.id);
             bweProbeResults.push({
                 x: absoluteTimeMs,
                 y: event.probeResult.bitrateBps,
-                name: event.probeResult.id,
+                name: event.probeResult.id + (probeCluster ? '\ndelay=' + (absoluteTimeMs - probeCluster.x) + 'ms' : ''),
             });
             break;
         case 19: // AlrState
