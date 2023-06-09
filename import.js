@@ -1,3 +1,6 @@
+// Difference between NTP epoch January 1st 1900 and Unix epoch
+// January 1st 1970 in microseconds.
+const NtpToEpochUs = 2208988800 * 1e+6;
 
 let file;
 function doImport(event) {
@@ -68,9 +71,9 @@ const graph = new Highcharts.Chart({
     xAxis: {
         type: 'datetime',
     },
-    yAxis: [{
+    yAxis: [{ // Bitrates.
         min: 0,
-    }, {
+    }, { // Percentages.
         min: 0,
         max: 100,
         title: {
@@ -78,6 +81,12 @@ const graph = new Highcharts.Chart({
         },
         labels: {
             format: '{value}%'
+        },
+        opposite: true,
+    }, { // Round-trip time et al.
+        min: 0,
+        title: {
+            text: 'seconds'
         },
         opposite: true,
     }],
@@ -114,10 +123,11 @@ const twccValues = {
 };
 const pictureLossIndicationsInbound = [];
 const rtcpReceiverReport = {};
+const rtcpSenderReport = {};
+const rtcpRoundTripTime = {};
 const pcap = new PCAPWriter();
 const perSsrcByteCount = {};
 const bitrateSeries = {};
-
 
 function decodeLegacy(event, startTimeUs, absoluteStartTimeUs) {
     const relativeTimeMs = (event.timestampUs - startTimeUs) / 1000;
@@ -179,31 +189,116 @@ function decodeLegacy(event, startTimeUs, absoluteStartTimeUs) {
                         name: 'ssrc=' + decoded.synchronizationSource,
                     });
                 }},
-                {payloadType: RTCP.PT_RR, filter: (decoded, packet, offset, length) => {
-                    const view = new DataView(packet.buffer, packet.byteOffset + offset, length)
-                    const reports = [];
+                {payloadType: RTCP.PT_SR, filter: (decoded, packet, offset, length) => {
+                    // https://www.rfc-editor.org/rfc/rfc3550#section-6.4.1
+                    const view = new DataView(packet.buffer, packet.byteOffset + offset, length);
+                    if (!rtcpSenderReport[decoded.synchronizationSource]) {
+                        rtcpSenderReport[decoded.synchronizationSource] = [];
+                        // TODO: include direction?
+                    }
+                    const report = {
+                        ntpTimestamp: view.getBigUint64(8),
+                        ntpTimestampMiddleBits: view.getUint32(10),
+                        rtpTimestamp: view.getUint32(12),
+                        packetCount: view.getUint32(16),
+                        octetCount: view.getUint32(20),
+                        absoluteSendTimeUs: BigInt(absoluteTimeUs + NtpToEpochUs),
+                    };
 
-                    offset = 8;
-                    while (offset + 24 <= view.byteLength) {
-                        reports.push({
-                            synchronizationSource: view.getUint32(offset),
-                            fractionLost: Math.floor(view.getUint8(offset + 4) / 256.0 * 100),
-                        });
-                        offset += 24;
+                    // Store so we can find it later.
+                    rtcpSenderReport[decoded.synchronizationSource].push(report);
+
+                    // Parse report blocks (uncommon in libWebRTC) to determine RTT.
+                    if (event.rtcpPacket.incoming === false) {
+                        // Don't try parsing report blocks on outbound SRs.
+                        return;
                     }
-                    if (decoded.reportCounter === reports.length) {
-                        reports.forEach(report => {
-                            if (!rtcpReceiverReport[report.synchronizationSource]) {
-                                rtcpReceiverReport[report.synchronizationSource] = [];
-                                // TODO: include direction?
+                    const reports = RTCP.decodeReceiverReportBlocks(packet, offset, true);
+                    reports.forEach(report => {
+                        if (!rtcpReceiverReport[report.synchronizationSource]) {
+                            rtcpReceiverReport[report.synchronizationSource] = [];
+                            // TODO: include direction?
+                        }
+                        let name = 'ssrc=' + report.synchronizationSource;
+                        rtcpReceiverReport[report.synchronizationSource].push({
+                            x: absoluteTimeMs, // TODO: actually the time from the RR?
+                            y: report.fractionLost,
+                            name,
+                        });
+                    });
+                    if (event.rtcpPacket.incoming === false && decoded.payloadType === RTCP.PT_RR) {
+                        // Can not calculate RTT on outbound RR, this will always result in 0.
+                        return;
+                    }
+                    reports.forEach(report => {
+                        if (report.dlsr === 0) return;
+                        // If DLSR is set, do RTT calculation as described in
+                        // https://www.rfc-editor.org/rfc/rfc3550#section-6.4.1
+                        // alternatively: https://source.chromium.org/chromium/chromium/src/+/refs/heads/main:third_party/webrtc/modules/rtp_rtcp/source/rtcp_receiver.cc;l=609;drc=25f2ea1a864270fef1c96c014f552f1459280ac1;bpv=1;bpt=1
+                        // But we have clock offset issues so we look at the local time we sent the SR.
+                        if (!rtcpSenderReport[report.synchronizationSource]) {
+                            // libWebRTC does not send SRs for RTX so there can be RRs without SRs)
+                            return;
+                        }
+                        const associatedSenderReport = rtcpSenderReport[report.synchronizationSource]
+                            .find(sr => sr.ntpTimestampMiddleBits === report.lsr);
+                        if (associatedSenderReport) {
+                            const rttAbsoluteUs = BigInt(absoluteTimeUs + NtpToEpochUs) - associatedSenderReport.absoluteSendTimeUs;
+                            const dlsr = BigInt(Math.floor(report.dlsr / 65536 * 1e+6));
+                            if (!rtcpRoundTripTime[report.synchronizationSource]) {
+                                rtcpRoundTripTime[report.synchronizationSource] = [];
                             }
-                            rtcpReceiverReport[report.synchronizationSource].push({
-                                x: absoluteTimeMs, // TODO: actually the time from the RR?
-                                y: report.fractionLost,
-                                name: 'ssrc=' + report.synchronizationSource,
-                            })
+                            rtcpRoundTripTime[report.synchronizationSource].push({
+                                x: absoluteTimeMs,
+                                y: Number(rttAbsoluteUs - dlsr) / 1e+6,
+                            });
+                        }
+                    });
+                }},
+                {payloadType: RTCP.PT_RR, filter: (decoded, packet, offset, length) => {
+                    // https://www.rfc-editor.org/rfc/rfc3550#section-6.4.2
+                    const reports = RTCP.decodeReceiverReportBlocks(packet, offset, false);
+                    if (!reports) return;
+                    reports.forEach(report => {
+                        if (!rtcpReceiverReport[report.synchronizationSource]) {
+                            rtcpReceiverReport[report.synchronizationSource] = [];
+                            // TODO: include direction?
+                        }
+                        let name = 'ssrc=' + report.synchronizationSource;
+                        rtcpReceiverReport[report.synchronizationSource].push({
+                            x: absoluteTimeMs, // TODO: actually the time from the RR?
+                            y: report.fractionLost,
+                            name,
                         });
+                    });
+                    if (event.rtcpPacket.incoming === false && decoded.payloadType === RTCP.PT_RR) {
+                        // Can not calculate RTT on outbound RR, this will always result in 0.
+                        return;
                     }
+                    reports.forEach(report => {
+                        if (report.dlsr === 0) return;
+                        // If DLSR is set, do RTT calculation as described in
+                        // https://www.rfc-editor.org/rfc/rfc3550#section-6.4.1
+                        // alternatively: https://source.chromium.org/chromium/chromium/src/+/refs/heads/main:third_party/webrtc/modules/rtp_rtcp/source/rtcp_receiver.cc;l=609;drc=25f2ea1a864270fef1c96c014f552f1459280ac1;bpv=1;bpt=1
+                        // But we have clock offset issues so we look at the local time we sent the SR.
+                        if (!rtcpSenderReport[report.synchronizationSource]) {
+                            // libWebRTC does not send SRs for RTX so there can be RRs without SRs)
+                            return;
+                        }
+                        const associatedSenderReport = rtcpSenderReport[report.synchronizationSource]
+                            .find(sr => sr.ntpTimestampMiddleBits === report.lsr);
+                        if (associatedSenderReport) {
+                            const rttAbsoluteUs = BigInt(absoluteTimeUs + NtpToEpochUs) - associatedSenderReport.absoluteSendTimeUs;
+                            const dlsr = BigInt(Math.floor(report.dlsr / 65536 * 1e+6));
+                            if (!rtcpRoundTripTime[report.synchronizationSource]) {
+                                rtcpRoundTripTime[report.synchronizationSource] = [];
+                            }
+                            rtcpRoundTripTime[report.synchronizationSource].push({
+                                x: absoluteTimeMs,
+                                y: Number(rttAbsoluteUs - dlsr) / 1e+6,
+                            });
+                        }
+                    });
                 }},
                 {payloadType: RTCP.PT_RTPFB, feedbackMessageType: RTCP.FMT_ALFB, filter: (decoded, packet, offset, length) => {
                     const direction = event.rtcpPacket.incoming ? 'inbound' : 'outbound';
@@ -216,7 +311,7 @@ function decodeLegacy(event, startTimeUs, absoluteStartTimeUs) {
                     twccValues[direction].push({
                         x: absoluteTimeMs,
                         y: Math.floor(100 * lost / result.delta.length),
-                        name: 'baseSeq=' + result.baseSequenceNumber
+                        name: 'baseSeq=' + result.baseSequenceNumber,
                     });
                 }},
             );
@@ -331,6 +426,13 @@ function plot() {
             yAxis: 1,
         }, false);
     });
+    Object.keys(rtcpRoundTripTime).forEach(ssrc => {
+        graph.addSeries({
+            name: 'RTCP RTT ssrc=' + ssrc,
+            data: rtcpRoundTripTime[ssrc],
+            yAxis: 2,
+        }, false);
+    })
     const toggle = document.getElementById('toggle');
     toggle.onchange = () => {
         graph.series.forEach(series => {

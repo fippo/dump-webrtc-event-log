@@ -162,4 +162,34 @@ class RTCP {
         }
         return result;
     }
+
+    static decodeReceiverReportBlocks(packet, offset, isSr) {
+        const view = new DataView(packet.buffer, packet.byteOffset + offset, packet.byteLength - offset);
+        if (packet.length < offset + (isSr ? 28 : 8)) {
+            console.error('overflow in report block parsing');
+            return;
+        }
+        const decoded = RTCP._parse(packet, offset);
+
+        const reports = [];
+        let reportCount = decoded.reportCounter;
+
+        offset = isSr ? 28 : 8;
+        while (offset + 24 <= view.byteLength && reportCount--) {
+            reports.push({
+                synchronizationSource: view.getUint32(offset),
+                fractionLost: Math.floor(view.getUint8(offset + 4) / 256.0 * 100),
+                sequenceNumber: view.getUint32(offset + 8),
+                jitter: view.getUint32(offset + 12),
+                lsr: view.getUint32(offset + 16),
+                dlsr: view.getUint32(offset + 20),
+            });
+            offset += 24;
+        }
+
+        if (decoded.reportCounter === reports.length) {
+            return reports;
+        }
+        console.error('overflow in report block parsing');
+    }
 }
