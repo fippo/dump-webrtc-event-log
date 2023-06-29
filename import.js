@@ -108,8 +108,8 @@ const graph = new Highcharts.Chart({
                 return [
                     '<b>Probe cluster ' + this.point.name + '</b>',
                     'Target bitrate: ' + this.point.y + 'bps',
-                    'First packet: ' + this.point.firstPacket[0],
-                    'Last packet: ' + this.point.lastPacket[0],
+                    'First packet: ' + (this.point.firstPacket ? this.point.firstPacket[0] : '(not sent)'),
+                    'Last packet: ' + (this.point.lastPacket ? this.point.lastPacket[0] : '(not sent)'),
                 ].join('<br>');
             } else if (this.series.name === 'BWE probe results') {
                 return [
