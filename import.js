@@ -128,6 +128,7 @@ const rtcpRoundTripTime = {};
 const pcap = new PCAPWriter();
 const perSsrcByteCount = {};
 const bitrateSeries = {};
+const probeClusterToPackets = { /* probe cluster id => {ssrc: [sequence, numbers]}*/};
 
 function decodeLegacy(event, startTimeUs, absoluteStartTimeUs) {
     const relativeTimeMs = (event.timestampUs - startTimeUs) / 1000;
@@ -139,6 +140,7 @@ function decodeLegacy(event, startTimeUs, absoluteStartTimeUs) {
             // TODO: reuse the bitrate calculation code from rtcshark
             // Per-SSRC bitrate graphs.
             const ssrc = new DataView(event.rtpPacket.header.buffer, event.rtpPacket.header.byteOffset, event.rtpPacket.header.byteLength).getUint32(8);
+            const sequenceNumber = new DataView(event.rtpPacket.header.buffer, event.rtpPacket.header.byteOffset, event.rtpPacket.header.byteLength).getUint16(2);
             if (!perSsrcByteCount[ssrc]) {
                 perSsrcByteCount[ssrc] = [0, relativeTimeMs];
                 bitrateSeries[ssrc] = [[absoluteTimeMs, 0]];
@@ -161,6 +163,17 @@ function decodeLegacy(event, startTimeUs, absoluteStartTimeUs) {
             if (relativeTimeMs - perSsrcByteCount[direction][1] > 1000) {
                 bitrateSeries[direction].push([absoluteTimeMs, 8000 * perSsrcByteCount[direction][0] / (relativeTimeMs - perSsrcByteCount[direction][1])]);
                 perSsrcByteCount[direction] = [0, relativeTimeMs];
+            }
+            // Populate probe cluster id => sequence number map
+            if (!event.rtpPacket.incoming && event.rtpPacket.probeClusterId !== 0) {
+                const cluster = event.rtpPacket.probeClusterId;
+                if (!probeClusterToPackets[cluster]) {
+                    probeClusterToPackets[cluster] = {};
+                }
+                if (!probeClusterToPackets[cluster][ssrc]) {
+                    probeClusterToPackets[cluster][ssrc] = [];
+                }
+                probeClusterToPackets[cluster][ssrc].push(sequenceNumber);
             }
             break;
         case 4: //'RTCP_EVENT':
