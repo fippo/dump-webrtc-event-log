@@ -102,13 +102,38 @@ const graph = new Highcharts.Chart({
         zoomType: 'x',
         renderTo : 'graph',
     },
+    tooltip: {
+        formatter: function(tooltip) {
+            if (this.series.name === 'BWE probe clusters') {
+                return [
+                    '<b>Probe cluster ' + this.point.name + '</b>',
+                    'Target bitrate: ' + this.point.y + 'bps',
+                    'First packet: ' + this.point.firstPacket[0],
+                    'Last packet: ' + this.point.lastPacket[0],
+                ].join('<br>');
+            } else if (this.series.name === 'BWE probe results') {
+                return [
+                    '<b>Probe result ' + this.point.name + '</b>',
+                    'Delay: ' + this.point.delayMs + 'ms',
+                    'Bandwidth estimate: ' + this.point.y + 'bps',
+                ].join('<br>');
+            }
+            return tooltip.defaultFormatter.call(this, tooltip);
+        },
+        split: true,
+    },
+
 });
 
 let basetime;
 const bweProbeClusters = [];
 const bweProbeResults = [];
+const bweProbeClusterToPackets = { /* probe cluster id => [[twcc id, length]]*/};
 const lossBasedUpdates = [];
 const delayBasedUpdates = [];
+const twccUri = 'http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01';
+const twccId = {}; // per-ssrc mapping of configured TWCC header extension id for outbound.
+
 const pictureLossIndications = {
     inbound: [],
     outbound: [],
@@ -128,7 +153,6 @@ const rtcpRoundTripTime = {};
 const pcap = new PCAPWriter();
 const perSsrcByteCount = {};
 const bitrateSeries = {};
-const probeClusterToPackets = { /* probe cluster id => {ssrc: [sequence, numbers]}*/};
 
 function decodeLegacy(event, startTimeUs, absoluteStartTimeUs) {
     const relativeTimeMs = (event.timestampUs - startTimeUs) / 1000;
@@ -140,7 +164,6 @@ function decodeLegacy(event, startTimeUs, absoluteStartTimeUs) {
             // TODO: reuse the bitrate calculation code from rtcshark
             // Per-SSRC bitrate graphs.
             const ssrc = new DataView(event.rtpPacket.header.buffer, event.rtpPacket.header.byteOffset, event.rtpPacket.header.byteLength).getUint32(8);
-            const sequenceNumber = new DataView(event.rtpPacket.header.buffer, event.rtpPacket.header.byteOffset, event.rtpPacket.header.byteLength).getUint16(2);
             if (!perSsrcByteCount[ssrc]) {
                 perSsrcByteCount[ssrc] = [0, relativeTimeMs];
                 bitrateSeries[ssrc] = [[absoluteTimeMs, 0]];
@@ -167,13 +190,14 @@ function decodeLegacy(event, startTimeUs, absoluteStartTimeUs) {
             // Populate probe cluster id => sequence number map
             if (!event.rtpPacket.incoming && event.rtpPacket.probeClusterId !== 0) {
                 const cluster = event.rtpPacket.probeClusterId;
-                if (!probeClusterToPackets[cluster]) {
-                    probeClusterToPackets[cluster] = {};
+                if (!bweProbeClusterToPackets[cluster]) {
+                    bweProbeClusterToPackets[cluster] = [];
                 }
-                if (!probeClusterToPackets[cluster][ssrc]) {
-                    probeClusterToPackets[cluster][ssrc] = [];
-                }
-                probeClusterToPackets[cluster][ssrc].push(sequenceNumber);
+                RTP.forEachExtension(event.rtpPacket.header, {filter: (extensionId, data) => {
+                    if (extensionId === twccId[ssrc]) {
+                        bweProbeClusterToPackets[cluster].push([data.getUint16(0), event.rtpPacket.packetLength]);
+                    }
+                }});
             }
             break;
         case 4: //'RTCP_EVENT':
@@ -337,6 +361,21 @@ function decodeLegacy(event, startTimeUs, absoluteStartTimeUs) {
         case 7: // delay based bwe update
             delayBasedUpdates.push([absoluteTimeMs, event.delayBasedBweUpdate.bitrateBps]);
             break;
+        case 9: // Video send config
+            event.videoSenderConfig.ssrcs.concat(event.videoSenderConfig.rtxSsrcs).forEach(ssrc => {
+                const twccExt = event.videoSenderConfig.headerExtensions.find(ext => ext.name === twccUri);
+                if (twccExt) {
+                    twccId[ssrc] = twccExt.id;
+                }
+            });
+            break;
+        case 11: { // Audio send config
+                const twccExt = event.audioSenderConfig.headerExtensions.find(ext => ext.name === twccUri);
+                if (twccExt) {
+                    twccId[event.audioSenderConfig.ssrc] = twccExt.id;
+                }
+                break;
+            }
         case 17: // BweProbeCluster
             bweProbeClusters.push({
                 x: absoluteTimeMs,
@@ -349,7 +388,8 @@ function decodeLegacy(event, startTimeUs, absoluteStartTimeUs) {
             bweProbeResults.push({
                 x: absoluteTimeMs,
                 y: event.probeResult.bitrateBps,
-                name: event.probeResult.id + (probeCluster ? '\ndelay=' + (absoluteTimeMs - probeCluster.x) + 'ms' : ''),
+                name: event.probeResult.id,
+                delayMs: absoluteTimeMs - probeCluster.x,
             });
             break;
         case 19: // AlrState
@@ -361,6 +401,13 @@ function decodeLegacy(event, startTimeUs, absoluteStartTimeUs) {
 }
 
 function plot() {
+    bweProbeClusters.forEach(cluster => {
+        const packets = bweProbeClusterToPackets[cluster.name];
+        if (packets) {
+            cluster.firstPacket = packets[0];
+            cluster.lastPacket = packets[packets.length - 1];
+        }
+    });
     [
         {
             name: 'BWE probe clusters',
