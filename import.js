@@ -121,8 +121,14 @@ const graph = new Highcharts.Chart({
             } else if (this.series.name === 'Delay based updates') {
                 return [
                     '<b>Delay based update</b>',
-                    'Bitrate: ' + this.point.y + 'bps',
+                    'Bitrate estimate: ' + this.point.y + 'bps',
                     'State: ' + {0: 'normal', 1: 'overuse', 2: 'underuse'}[this.point.options.state || 0],
+                ].join('<br>');
+            } else if (this.series.name === 'Loss based updates') {
+                return [
+                    '<b>Loss based update</b>',
+                    'Bitrate estimate: ' + this.point.y + 'bps',
+                    'Fraction loss: ' + Math.round(this.point.options.fractionLoss / 255.0 * 100) + '%',
                 ].join('<br>');
             }
             return tooltip.defaultFormatter.call(this, tooltip);
@@ -361,7 +367,7 @@ function decodeLegacy(event, startTimeUs, absoluteStartTimeUs) {
         case 5: // audio playout event, ignore
             break;
         case 6: // loss based bwe update
-            lossBasedUpdates.push([absoluteTimeMs, event.lossBasedBweUpdate.bitrateBps]);
+            lossBasedUpdates.push({x: absoluteTimeMs, y: event.lossBasedBweUpdate.bitrateBps, fractionLoss: event.lossBasedBweUpdate.fractionLoss});
             break;
         case 7: // delay based bwe update
             delayBasedUpdates.push({x: absoluteTimeMs, y: event.delayBasedBweUpdate.bitrateBps, state: event.delayBasedBweUpdate.detectorState});
