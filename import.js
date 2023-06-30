@@ -201,16 +201,19 @@ function decodeLegacy(event, startTimeUs, absoluteStartTimeUs) {
                 perSsrcByteCount[direction] = [0, relativeTimeMs];
             }
             // Populate probe cluster id => sequence number map
-            if (!event.rtpPacket.incoming && event.rtpPacket.probeClusterId !== 0) {
-                const cluster = event.rtpPacket.probeClusterId;
-                if (!bweProbeClusterToPackets[cluster]) {
-                    bweProbeClusterToPackets[cluster] = [];
-                }
-                RTP.forEachExtension(event.rtpPacket.header, {filter: (extensionId, data) => {
-                    if (extensionId === twccId[ssrc]) {
-                        bweProbeClusterToPackets[cluster].push([data.getUint16(0), event.rtpPacket.packetLength]);
+            if (!event.rtpPacket.incoming) {
+                if (event.rtpPacket.probeClusterId !== 0) { // Packet is a probe.
+                    const cluster = event.rtpPacket.probeClusterId;
+                    if (!bweProbeClusterToPackets[cluster]) {
+                        bweProbeClusterToPackets[cluster] = [];
                     }
-                }});
+                    RTP.forEachExtension(event.rtpPacket.header, {filter: (extensionId, data) => {
+                        if (extensionId === twccId[ssrc]) {
+                            bweProbeClusterToPackets[cluster].push([data.getUint16(0), event.rtpPacket.packetLength]);
+                        }
+                    }});
+                }
+
                 // Note send times.
                 RTP.forEachExtension(event.rtpPacket.header, {filter: (extensionId, data) => {
                     if (extensionId === twccId[ssrc]) {
