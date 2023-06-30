@@ -2,17 +2,16 @@
 // January 1st 1970 in microseconds.
 const NtpToEpochUs = 2208988800 * 1e+6;
 
-let file;
 function doImport(event) {
     event.target.disabled = true;
 
     const reader = new FileReader();
     reader.onload = ((file) => {
-        // WebRTC-internals follows a certain format when creating the log file.
-        // Try to interpret it as the timestamp of the capture, other
         return (e) => {
             const events = protoRootV2.lookupType('webrtc.rtclog2.EventStream').decode(new Uint8Array(e.target.result));
             if (events.stream.length > 0) { // legacy file format.
+                // WebRTC-internals follows a certain format when creating the log file.
+                // Try to interpret it as the timestamp of the capture, other
                 let absoluteStartTimeUs = 0;
                 const dateMatch = event.target.files[0].name.match(/.*_(\d\d\d\d)(\d\d)(\d\d)_(\d\d)(\d\d)_(\d+)_.*.log/);
                 if (dateMatch) {
@@ -39,6 +38,7 @@ function doImport(event) {
     reader.readAsArrayBuffer(event.target.files[0]);
 }
 
+// Load protbuf files at startup.
 let protoRootV1;
 let protoRootV2;
 Promise.all([
@@ -120,7 +120,6 @@ const graph = new Highcharts.Chart({
                     'Bandwidth estimate: ' + this.point.y + 'bps',
                 ].join('<br>');
             } else if (this.series.name === 'Delay based updates') {
-                console.log(this.point);
                 return [
                     '<b>Delay based update</b>',
                     'Bitrate: ' + this.point.y + 'bps',
@@ -219,9 +218,8 @@ function decodeLegacy(event, startTimeUs, absoluteStartTimeUs) {
                         name: 'ssrc=' + decoded.synchronizationSource,
                     });
                 }},
-                {payloadType: RTCP.PT_PSFB, feedbackMessageType: RTCP.FMT_ALFB, filter: (decoded, packet, offset, length) => {
+                {payloadType: RTCP.PT_PSFB, feedbackMessageType: RTCP.FMT_ALFB, filter: (decoded, view) => {
                     // https://datatracker.ietf.org/doc/html/draft-alvestrand-rmcat-remb-03#section-2
-                    const view = new DataView(packet.buffer, packet.byteOffset + offset, length);
                     if (view.getUint32(12) != 0x52454d42) {
                         // REMB literal.
                         return;
@@ -235,9 +233,8 @@ function decodeLegacy(event, startTimeUs, absoluteStartTimeUs) {
                         name: 'ssrc=' + decoded.synchronizationSource,
                     });
                 }},
-                {payloadType: RTCP.PT_SR, filter: (decoded, packet, offset, length) => {
+                {payloadType: RTCP.PT_SR, filter: (decoded, view) => {
                     // https://www.rfc-editor.org/rfc/rfc3550#section-6.4.1
-                    const view = new DataView(packet.buffer, packet.byteOffset + offset, length);
                     if (!rtcpSenderReport[decoded.synchronizationSource]) {
                         rtcpSenderReport[decoded.synchronizationSource] = [];
                         // TODO: include direction?
@@ -259,7 +256,7 @@ function decodeLegacy(event, startTimeUs, absoluteStartTimeUs) {
                         // Don't try parsing report blocks on outbound SRs.
                         return;
                     }
-                    const reports = RTCP.decodeReceiverReportBlocks(packet, offset, true);
+                    const reports = RTCP.decodeReceiverReportBlocks(view, true);
                     reports.forEach(report => {
                         if (!rtcpReceiverReport[report.synchronizationSource]) {
                             rtcpReceiverReport[report.synchronizationSource] = [];
@@ -301,9 +298,9 @@ function decodeLegacy(event, startTimeUs, absoluteStartTimeUs) {
                         }
                     });
                 }},
-                {payloadType: RTCP.PT_RR, filter: (decoded, packet, offset, length) => {
+                {payloadType: RTCP.PT_RR, filter: (decoded, view) => {
                     // https://www.rfc-editor.org/rfc/rfc3550#section-6.4.2
-                    const reports = RTCP.decodeReceiverReportBlocks(packet, offset, false);
+                    const reports = RTCP.decodeReceiverReportBlocks(view, false);
                     if (!reports) return;
                     reports.forEach(report => {
                         if (!rtcpReceiverReport[report.synchronizationSource]) {
@@ -346,9 +343,9 @@ function decodeLegacy(event, startTimeUs, absoluteStartTimeUs) {
                         }
                     });
                 }},
-                {payloadType: RTCP.PT_RTPFB, feedbackMessageType: RTCP.FMT_ALFB, filter: (decoded, packet, offset, length) => {
+                {payloadType: RTCP.PT_RTPFB, feedbackMessageType: RTCP.FMT_ALFB, filter: (decoded, view) => {
                     const direction = event.rtcpPacket.incoming ? 'inbound' : 'outbound';
-                    const result = RTCP.decodeTransportCC(packet, offset);
+                    const result = RTCP.decodeTransportCC(view);
                     if (!result) {
                         return;
                     }
@@ -383,8 +380,8 @@ function decodeLegacy(event, startTimeUs, absoluteStartTimeUs) {
                 if (twccExt) {
                     twccId[event.audioSenderConfig.ssrc] = twccExt.id;
                 }
-                break;
             }
+            break;
         case 17: // BweProbeCluster
             bweProbeClusters.push({
                 x: absoluteTimeMs,
@@ -468,7 +465,7 @@ function plot() {
             type: 'scatter',
             data: twccValues['inbound'],
             yAxis: 1,
-        }
+        },
     ].map(series => {
         // Avoid hitting https://api.highcharts.com/highcharts/plotOptions.series.turboThreshold
         // for large scatter plots
@@ -498,7 +495,7 @@ function plot() {
             data: rtcpRoundTripTime[ssrc],
             yAxis: 2,
         }, false);
-    })
+    });
 
     const toggle = document.getElementById('toggle');
     toggle.onchange = () => {

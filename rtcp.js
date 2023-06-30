@@ -48,10 +48,7 @@ class RTCP {
     * If the payloadType is undefined or matches the decoded payloadType,
     * the filter method is called with
     * * the decoded RTCP packet,
-    * * the raw packet,
-    * * the offset of the RTCP packet,
-    * * the length of the RTCP packet.
-    * The filter must not change the packet but may change the packet content.
+    * * a DataView for the content of the RTCP packet
     */
     static forEach(packet, ...filters) {
         let offset = 0;
@@ -68,25 +65,22 @@ class RTCP {
             if (offset + length > packet.length) {
                 return false;
             }
-            for (let i = 0; i < filters.length; i++) {
-                const {payloadType, feedbackMessageType} = filters[i];
+            filters.forEach(({payloadType, feedbackMessageType, filter}) => {
                 if ((payloadType === undefined || payloadType === decoded.payloadType) &&
                 (feedbackMessageType === undefined || feedbackMessageType === decoded.feedbackMessageType)) {
-                    filters[i].filter(decoded, packet, offset, length);
+                    filter(decoded, new DataView(packet.buffer, packet.byteOffset + offset, length));
                 }
-            }
+            });
             offset += length;
         }
         return true;
     }
 
-    static decodeTransportCC(packet, offset) {
-        if (packet.length < offset + 20) {
+    static decodeTransportCC(view) {
+        if (view.byteLength < 20) {
             console.error('overflow in transport-cc');
             return;
         }
-        const view = new DataView(packet.buffer, packet.byteOffset + offset, packet.byteLength - offset);
-
         const baseSequenceNumber = view.getUint16(12);
         let count = view.getUint16(14);
         const referenceTime_ms = (view.getInt32(16) >> 8) * 64;
@@ -98,7 +92,7 @@ class RTCP {
             delta: new Array(count),
         };
 
-        offset = 20;
+        let offset = 20;
         const delta_sizes = [];
         const chunks = [];
         while(delta_sizes.length < result.delta.length) {
@@ -163,18 +157,17 @@ class RTCP {
         return result;
     }
 
-    static decodeReceiverReportBlocks(packet, offset, isSr) {
-        const view = new DataView(packet.buffer, packet.byteOffset + offset, packet.byteLength - offset);
-        if (packet.length < offset + (isSr ? 28 : 8)) {
+    static decodeReceiverReportBlocks(view, isSr) {
+        if (view.byteLength < (isSr ? 28 : 8)) {
             console.error('overflow in report block parsing');
             return;
         }
-        const decoded = RTCP._parse(packet, offset);
+        const decoded = RTCP._parse(view);
 
         const reports = [];
         let reportCount = decoded.reportCounter;
 
-        offset = isSr ? 28 : 8;
+        let offset = isSr ? 28 : 8;
         while (offset + 24 <= view.byteLength && reportCount--) {
             reports.push({
                 synchronizationSource: view.getUint32(offset),
