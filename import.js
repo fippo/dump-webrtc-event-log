@@ -105,11 +105,13 @@ const graph = new Highcharts.Chart({
     tooltip: {
         formatter: function(tooltip) {
             if (this.series.name === 'BWE probe clusters') {
+                const packetInfos = this.point.packetInfos;
+                console.log(packetInfos, this.point);
                 return [
                     '<b>Probe cluster ' + this.point.name + '</b>',
                     'Target bitrate: ' + this.point.y + 'bps',
-                    'First packet: ' + (this.point.firstPacket ? this.point.firstPacket[0] : '(not sent)'),
-                    'Last packet: ' + (this.point.lastPacket ? this.point.lastPacket[0] : '(not sent)'),
+                    'Sequence numbers: ' + (packetInfos ? packetInfos.map(i => i[0]).join(',') : '(not sent)'),
+                    'Sizes: ' + (packetInfos ? packetInfos.map(i => i[1]).join(',') : '(not sent)'),
                 ].join('<br>');
             } else if (this.series.name === 'BWE probe results') {
                 return [
@@ -401,12 +403,9 @@ function decodeLegacy(event, startTimeUs, absoluteStartTimeUs) {
 }
 
 function plot() {
+    // Annotate BWE probe clusters with per-packet infos.
     bweProbeClusters.forEach(cluster => {
-        const packets = bweProbeClusterToPackets[cluster.name];
-        if (packets) {
-            cluster.firstPacket = packets[0];
-            cluster.lastPacket = packets[packets.length - 1];
-        }
+        cluster.packetInfos = bweProbeClusterToPackets[cluster.name];
     });
     [
         {
@@ -493,6 +492,7 @@ function plot() {
             yAxis: 2,
         }, false);
     })
+
     const toggle = document.getElementById('toggle');
     toggle.onchange = () => {
         graph.series.forEach(series => {
