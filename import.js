@@ -119,6 +119,13 @@ const graph = new Highcharts.Chart({
                     'Delay: ' + this.point.delayMs + 'ms',
                     'Bandwidth estimate: ' + this.point.y + 'bps',
                 ].join('<br>');
+            } else if (this.series.name === 'Delay based updates') {
+                console.log(this.point);
+                return [
+                    '<b>Delay based update</b>',
+                    'Bitrate: ' + this.point.y + 'bps',
+                    'State: ' + {0: 'normal', 1: 'overuse', 2: 'underuse'}[this.point.options.state || 0],
+                ].join('<br>');
             }
             return tooltip.defaultFormatter.call(this, tooltip);
         },
@@ -361,7 +368,7 @@ function decodeLegacy(event, startTimeUs, absoluteStartTimeUs) {
             lossBasedUpdates.push([absoluteTimeMs, event.lossBasedBweUpdate.bitrateBps]);
             break;
         case 7: // delay based bwe update
-            delayBasedUpdates.push([absoluteTimeMs, event.delayBasedBweUpdate.bitrateBps]);
+            delayBasedUpdates.push({x: absoluteTimeMs, y: event.delayBasedBweUpdate.bitrateBps, state: event.delayBasedBweUpdate.detectorState});
             break;
         case 9: // Video send config
             event.videoSenderConfig.ssrcs.concat(event.videoSenderConfig.rtxSsrcs).forEach(ssrc => {
