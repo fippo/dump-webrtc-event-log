@@ -33,6 +33,11 @@ function doImport(event) {
             // DecodeDeltas:
             // https://source.chromium.org/chromium/chromium/src/+/refs/heads/main:third_party/webrtc/logging/rtc_event_log/encoder/delta_encoding.cc;drc=a129ef22074b9f81f549ff068a15fc320072b3bb;l=807
             window.events = events;
+            decode(events);
+            plot();
+            const warning = document.createElement('div');
+            warning.innerText = 'WARNING: new event log format detected, support is still work in progress.';
+            document.body.appendChild(warning);
         };
     })(event.target.files[0]);
     reader.readAsArrayBuffer(event.target.files[0]);
@@ -409,6 +414,33 @@ function decodeLegacy(event, startTimeUs, absoluteStartTimeUs) {
             //console.log(event.type, event);
             break;
     }
+}
+
+function decode(events) {
+    let absoluteStartTimeMs;
+    events.beginLogEvents.forEach(event => {
+        absoluteStartTimeMs = event.utcTimeMs - event.timestampMs;
+    });
+    events.probeClusters.forEach(cluster => {
+        bweProbeClusters.push({
+            x: absoluteStartTimeMs + cluster.timestampMs,
+            y: cluster.bitrateBps,
+            name: cluster.id,
+            bitrateBps: cluster.bitrateBps,
+            minPackets: cluster.minPackets,
+            minBytes: cluster.minBytes,
+        });
+    });
+    events.probeSuccess.forEach(result => {
+        const probeCluster = events.probeClusters.find(c => c.id === result.id);
+        bweProbeResults.push({
+            x: absoluteStartTimeMs + result.timestampMs,
+            y: result.bitrateBps,
+            name: result.id,
+            delayMs: result.timestampMs - probeCluster.timestampMs,
+        });
+    });
+    // TODO: probe failures.
 }
 
 function plot() {
