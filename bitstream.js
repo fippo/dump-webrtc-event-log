@@ -51,7 +51,6 @@ class FixedLengthDeltaDecoder {
         const encodingType = this.reader.ReadBits(2);
         this.params = {};
         this.params.deltaWidthBits = this.reader.ReadBits(6) + 1n;
-        this.params.deltaMaskBits = (2n << this.params.deltaWidthBits) - 1n;
         if (encodingType === 0n) {
             this.params.signedDeltas = false;
             this.params.valuesOptional = false;
@@ -63,7 +62,6 @@ class FixedLengthDeltaDecoder {
         } else {
             console.error('Unsupported format');
         }
-        this.params.valueMaskBits = (2n << this.params.valueWidthBits) - 1n;
     }
 
     // See FixedLengthDeltaDecoder::Decode
@@ -99,14 +97,12 @@ class FixedLengthDeltaDecoder {
             const topBit = 1n << (this.params.deltaWidthBits - 1n);
             const positive = (delta & topBit) === 0n;
             if (positive) {
-                // Can be written as BigInt.asUintN?
-                return (base + delta) & this.params.valueMaskBits;
+                return BigInt.asUintN(Number(this.params.valueWidthBits), base + delta);
             }
             const deltaAbs = BigInt.asUintN(Number(this.params.deltaWidthBits), ~delta) + 1n;
             return BigInt.asUintN(Number(this.params.valueWidthBits), base - deltaAbs);
         } else {
-            // Can be written as BigInt.asUintN?
-            return (base + delta) & this.params.valueMaskBits;
+            return BigInt.asUintN(Number(this.params.valueWidthBits), base + delta);
         }
     }
 
