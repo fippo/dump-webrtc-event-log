@@ -35,6 +35,7 @@ function doImport(event) {
             window.events = events;
             decode(events);
             plot();
+            savePCAP(file.name);
             const warning = document.createElement('div');
             warning.innerText = 'WARNING: new event log format detected, support is still work in progress.';
             document.body.appendChild(warning);
@@ -416,6 +417,35 @@ function decodeLegacy(event, startTimeUs, absoluteStartTimeUs) {
     }
 }
 
+function decodeRtpDelta(what, configs) {
+    console.log(what)
+    const padding = (new FixedLengthDeltaDecoder(what.paddingSizeDeltas, BigInt(what.paddingSize), what.numberOfDeltas)).decode();
+    // headerSize != 20 bytes? X bit set!
+    const headerSize = (new FixedLengthDeltaDecoder(what.headerSizeDeltas, BigInt(what.headerSize), what.numberOfDeltas)).decode();
+    const marker = (new FixedLengthDeltaDecoder(what.markerDeltas, what.marker ? 1n : 0n, what.numberOfDeltas)).decode();
+    const payloadType = (new FixedLengthDeltaDecoder(what.payloadTypeDeltas, BigInt(what.payloadType), what.numberOfDeltas)).decode();
+    const sequenceNumber = (new FixedLengthDeltaDecoder(what.sequenceNumberDeltas, BigInt(what.sequenceNumber), what.numberOfDeltas)).decode();
+    const rtpTimestamp = (new FixedLengthDeltaDecoder(what.rtpTimestampDeltas, BigInt(what.rtpTimestamp), what.numberOfDeltas)).decode();
+    const payloadSize = (new FixedLengthDeltaDecoder(what.payloadSizeDeltas, BigInt(what.payloadSize), what.numberOfDeltas)).decode();
+    const ssrc = what.ssrc;
+    // Find header extension ids, rtx ssrc from events.(audio|video)(Send|Recv)StreamConfigs with the associated ssrc.
+    // TODO: What about the flexfec SSRC?
+    const config = configs.find(c => c.ssrc === ssrc);
+    // CSRCS list missing?
+    // TODO: decode all the individual header extensions with known names.
+    console.log({padding, marker, payloadType, headerSize, sequenceNumber, rtpTimestamp, payloadSize, ssrc, config});
+}
+
+function decodeRtcpDelta(what) {
+    const timestampMs = [what.timestampMs].concat((new FixedLengthDeltaDecoder(what.timestampMsDeltas, BigInt(what.timestampMs), what.numberOfDeltas)).decode());
+    const packets = [what.rawPacket]
+        .concat((new BlobDecoder(what.rawPacketBlobs, what.numberOfDeltas)).decode());
+    for (let i = 0; i < packets.length; i++) {
+        packets[i].timestampMs = Number(timestampMs[i]);
+    }
+    return packets;
+}
+
 function decode(events) {
     let absoluteStartTimeMs;
     events.beginLogEvents.forEach(event => {
@@ -441,6 +471,31 @@ function decode(events) {
         });
     });
     // TODO: probe failures.
+
+    // write RTCP to PCAP.
+    const outgoingRtcpPackets = events.outgoingRtcpPackets
+        .map(decodeRtcpDelta)
+        .flat();
+    const incomingRtcpPackets = events.incomingRtcpPackets
+        .map(decodeRtcpDelta)
+        .flat();
+    while (outgoingRtcpPackets.length && incomingRtcpPackets.length) {
+        if (!outgoingRtcpPackets.length) { // flush incoming packets.
+            const packet = incomingRtcpPackets.shift();
+            pcap.write(packet, true, packet.byteLength, absoluteStartTimeMs + packet.timestampMs);
+        } else if (!incomingRtcpPackets.length) { // flush outgoing packets.
+            const packet = outgoingRtcpPackets.shift();
+            pcap.write(packet, false, packet.byteLength, absoluteStartTimeMs + packet.timestampMs);
+        } else if (outgoingRtcpPackets[0].timestampMs <= incomingRtcpPackets[0].timestampMs) {
+            // write outgoing packet.
+            const packet = outgoingRtcpPackets.shift();
+            pcap.write(packet, false, packet.byteLength, absoluteStartTimeMs + packet.timestampMs);
+        } else {
+            // write incoming packet.
+            const packet = incomingRtcpPackets.shift();
+            pcap.write(packet, true, packet.byteLength, absoluteStartTimeMs + packet.timestampMs);
+        }
+    }
 }
 
 function plot() {

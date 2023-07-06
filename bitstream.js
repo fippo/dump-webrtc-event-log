@@ -1,3 +1,16 @@
+// See (static) DecodeVarInt
+function _decodeVarInt(reader) {
+    let decoded = 0n;
+    for (let i = 0; i < 10; i++) {
+        const byte = reader.ReadBits(8);
+        decoded += byte << BigInt(7 * i);
+        if (!(BigInt.asUintN(1, byte) & BigInt(0x80))) {
+            return decoded;
+        }
+    }
+    console.error('decodeVarInt failed.');
+}
+
 // Modelled after libWebRTC bitstream reader and  delta encoder.
 // https://source.chromium.org/chromium/chromium/src/+/refs/heads/main:third_party/webrtc/rtc_base/bitstream_reader.h;drc=afec9eaf1d11cc77e8e06f06cb026fadf0dbf758;l=30
 // TODO: add invalidation flag to help deal with parsing errors.
@@ -79,7 +92,7 @@ class FixedLengthDeltaDecoder {
         for (let i = 0; i < this.numberOfDeltas; i++) {
             if (!existingValues[i]) continue;
             if (previous === undefined) {
-                values[i] = this._decodeVarInt();
+                values[i] = _decodeVarInt(this.reader);
             } else {
                 const delta = this.reader.ReadBits(this.params.deltaWidthBits);
                 values[i] = this.applyDelta(previous, delta);
@@ -105,17 +118,28 @@ class FixedLengthDeltaDecoder {
             return BigInt.asUintN(Number(this.params.valueWidthBits), base + delta);
         }
     }
+}
 
-    // See (static) DecodeVarInt
-    static _decodeVarInt() {
-        let decoded = 0n;
-        for (let i = 0; i < 10; i++) {
-            const byte = this.reader.ReadBits(8);
-            decoded += byte << (7 * i);
-            if (!byte & 0x80) {
-                return decoded;
-            }
+// Based on blob_encoding.cc:
+// https://source.chromium.org/chromium/chromium/src/+/main:third_party/webrtc/logging/rtc_event_log/encoder/blob_encoding.cc;l=48?q=blob_encoding.cc&ss=chromium%2Fchromium%2Fsrc
+class BlobDecoder {
+    constructor(data, numberOfDeltas) {
+        this.reader = new BitstreamReader(data);
+        this.data = data;
+        this.numberOfDeltas = numberOfDeltas;
+    }
+    // See DecodeBlobs
+    decode() {
+        const lengths = new Array(this.numberOfDeltas);
+        const values = new Array(this.numberOfDeltas);
+        for (let i = 0; i < this.numberOfDeltas; i++) {
+            lengths[i] = Number(_decodeVarInt(this.reader));
         }
-        console.error('decodeVarInt failed.');
+        let offset = this.reader.offset;
+        for (let i = 0; i < this.numberOfDeltas; i++) {
+            values[i] = new Uint8Array(this.data.buffer, this.data.byteOffset + offset, lengths[i]);
+            offset += lengths[i];
+        }
+        return values;
     }
 }
