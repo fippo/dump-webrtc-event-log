@@ -446,6 +446,28 @@ function decodeRtcpDelta(what) {
     return packets;
 }
 
+function decodeLossBasedBweUpdate(what) {
+    const timestampMs = [what.timestampMs].concat((new FixedLengthDeltaDecoder(what.timestampMsDeltas, BigInt(what.timestampMs), what.numberOfDeltas)).decode());
+    const bitrateBps = [what.bitrateBps].concat((new FixedLengthDeltaDecoder(what.bitrateBpsDeltas, BigInt(what.bitrateBps), what.numberOfDeltas)).decode());
+    const fractionLoss = [what.fractionLoss].concat((new FixedLengthDeltaDecoder(what.fractionLossDeltas, BigInt(what.fractionLoss), what.numberOfDeltas)).decode());
+    return timestampMs.map((_, i) => ({
+        timestampMs: Number(timestampMs[i]),
+        bitrateBps: Number(bitrateBps[i]),
+        fractionLoss: Number(fractionLoss[i]),
+    }));
+}
+
+function decodeDelayBasedBweUpdate(what) {
+    const timestampMs = [what.timestampMs].concat((new FixedLengthDeltaDecoder(what.timestampMsDeltas, BigInt(what.timestampMs), what.numberOfDeltas)).decode());
+    const bitrateBps = [what.bitrateBps].concat((new FixedLengthDeltaDecoder(what.bitrateBpsDeltas, BigInt(what.bitrateBps), what.numberOfDeltas)).decode());
+    const detectorState = [what.detectorState].concat((new FixedLengthDeltaDecoder(what.detectorStateDeltas, BigInt(what.detectorState), what.numberOfDeltas)).decode());
+    return timestampMs.map((_, i) => ({
+        timestampMs: Number(timestampMs[i]),
+        bitrateBps: Number(bitrateBps[i]),
+        detectorState: Number(detectorState[i]),
+    }));
+}
+
 function decode(events) {
     let absoluteStartTimeMs;
     events.beginLogEvents.forEach(event => {
@@ -496,6 +518,18 @@ function decode(events) {
             pcap.write(packet, true, packet.byteLength, absoluteStartTimeMs + packet.timestampMs);
         }
     }
+
+    // Loss-based and delay-based BWE updates.
+    events.lossBasedBweUpdates.forEach(update => {
+        decodeLossBasedBweUpdate(update).forEach(result => {
+            lossBasedUpdates.push({x: absoluteStartTimeMs + result.timestampMs, y: result.bitrateBps, fractionLoss: result.fractionLoss});
+        });
+    });
+    events.delayBasedBweUpdates.forEach(update => {
+        decodeDelayBasedBweUpdate(update).forEach(result => {
+            delayBasedUpdates.push({x: absoluteStartTimeMs + result.timestampMs, y: result.bitrateBps, state: result.detectorState});
+        });
+    });
 }
 
 function plot() {

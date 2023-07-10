@@ -57,9 +57,13 @@ class BitstreamReader {
 // https://source.chromium.org/chromium/chromium/src/+/main:third_party/webrtc/logging/rtc_event_log/encoder/delta_encoding.cc;l=807;drc=277766f55efc7ba37fbaa3a9f86ba36e9adb94f0
 class FixedLengthDeltaDecoder {
     constructor(data, base, numberOfDeltas) {
-        this.reader = new BitstreamReader(data);
         this.base = base;
         this.numberOfDeltas = numberOfDeltas;
+        if (data.buffer) {
+            this.reader = new BitstreamReader(data);
+        } else {
+            return;
+        }
 
         const encodingType = this.reader.ReadBits(2);
         this.params = {};
@@ -79,6 +83,9 @@ class FixedLengthDeltaDecoder {
 
     // See FixedLengthDeltaDecoder::Decode
     decode() {
+        if (!this.reader) {
+            return (new Array(this.numberOfDeltas)).fill(this.base);
+        }
         const existingValues = new Array(this.numberOfDeltas);
         if (this.params.valuesOptional) {
             for (let i = 0; i < this.numberOfDeltas; i++) {
