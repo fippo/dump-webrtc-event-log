@@ -173,6 +173,32 @@ const pcap = new PCAPWriter();
 const perSsrcByteCount = {};
 const bitrateSeries = {};
 
+function countRtp(relativeTimeMs, absoluteTimeMs, ssrc, incoming, headerLength, packetLength) {
+    if (!perSsrcByteCount[ssrc]) {
+        perSsrcByteCount[ssrc] = [0, relativeTimeMs];
+        bitrateSeries[ssrc] = [[absoluteTimeMs, 0]];
+        bitrateSeries[ssrc].incoming = incoming;
+        // TODO: extract payload type to infer media type.
+    }
+    perSsrcByteCount[ssrc][0] += packetLength - headerLength;
+    if (relativeTimeMs - perSsrcByteCount[ssrc][1] > 1000) {
+        bitrateSeries[ssrc].push([absoluteTimeMs, 8000 * perSsrcByteCount[ssrc][0] / (relativeTimeMs - perSsrcByteCount[ssrc][1])]);
+        perSsrcByteCount[ssrc] = [0, relativeTimeMs];
+    }
+
+    // Cumulated bitrate graphs.
+    const direction = incoming ? 'total_incoming' : 'total_outgoing';
+    if (!perSsrcByteCount[direction]) {
+        perSsrcByteCount[direction] = [0, relativeTimeMs];
+        bitrateSeries[direction] = [[absoluteTimeMs, 0]];
+    }
+    perSsrcByteCount[direction][0] += packetLength - headerLength;
+    if (relativeTimeMs - perSsrcByteCount[direction][1] > 1000) {
+        bitrateSeries[direction].push([absoluteTimeMs, 8000 * perSsrcByteCount[direction][0] / (relativeTimeMs - perSsrcByteCount[direction][1])]);
+        perSsrcByteCount[direction] = [0, relativeTimeMs];
+    }
+}
+
 function decodeLegacy(event, startTimeUs, absoluteStartTimeUs) {
     const relativeTimeMs = (event.timestampUs - startTimeUs) / 1000;
     const absoluteTimeMs = absoluteStartTimeUs / 1000 + relativeTimeMs;
@@ -183,29 +209,7 @@ function decodeLegacy(event, startTimeUs, absoluteStartTimeUs) {
             // TODO: reuse the bitrate calculation code from rtcshark
             // Per-SSRC bitrate graphs.
             const ssrc = new DataView(event.rtpPacket.header.buffer, event.rtpPacket.header.byteOffset, event.rtpPacket.header.byteLength).getUint32(8);
-            if (!perSsrcByteCount[ssrc]) {
-                perSsrcByteCount[ssrc] = [0, relativeTimeMs];
-                bitrateSeries[ssrc] = [[absoluteTimeMs, 0]];
-                bitrateSeries[ssrc].incoming = event.rtpPacket.incoming;
-                // TODO: extract payload type to infer media type.
-            }
-            perSsrcByteCount[ssrc][0] += event.rtpPacket.packetLength - event.rtpPacket.header.byteLength;
-            if (relativeTimeMs - perSsrcByteCount[ssrc][1] > 1000) {
-                bitrateSeries[ssrc].push([absoluteTimeMs, 8000 * perSsrcByteCount[ssrc][0] / (relativeTimeMs - perSsrcByteCount[ssrc][1])]);
-                perSsrcByteCount[ssrc] = [0, relativeTimeMs];
-            }
-
-            // Cumulated bitrate graphs.
-            const direction = event.rtpPacket.incoming ? 'total_incoming' : 'total_outgoing'
-            if (!perSsrcByteCount[direction]) {
-                perSsrcByteCount[direction] = [0, relativeTimeMs];
-                bitrateSeries[direction] = [[absoluteTimeMs, 0]];
-            }
-            perSsrcByteCount[direction][0] += event.rtpPacket.packetLength - event.rtpPacket.header.byteLength;
-            if (relativeTimeMs - perSsrcByteCount[direction][1] > 1000) {
-                bitrateSeries[direction].push([absoluteTimeMs, 8000 * perSsrcByteCount[direction][0] / (relativeTimeMs - perSsrcByteCount[direction][1])]);
-                perSsrcByteCount[direction] = [0, relativeTimeMs];
-            }
+            countRtp(relativeTimeMs, absoluteTimeMs, ssrc, event.rtpPacket.incoming, event.rtpPacket.header.byteLength, event.rtpPacket.packetLength);
             // Populate probe cluster id => sequence number map
             if (!event.rtpPacket.incoming && event.rtpPacket.probeClusterId !== 0) {
                 const cluster = event.rtpPacket.probeClusterId;
@@ -418,22 +422,38 @@ function decodeLegacy(event, startTimeUs, absoluteStartTimeUs) {
 }
 
 function decodeRtpDelta(what, configs) {
-    console.log(what)
+    const ssrc = what.ssrc;
+
     const padding = (new FixedLengthDeltaDecoder(what.paddingSizeDeltas, BigInt(what.paddingSize), what.numberOfDeltas)).decode();
-    // headerSize != 20 bytes? X bit set!
     const headerSize = (new FixedLengthDeltaDecoder(what.headerSizeDeltas, BigInt(what.headerSize), what.numberOfDeltas)).decode();
     const marker = (new FixedLengthDeltaDecoder(what.markerDeltas, what.marker ? 1n : 0n, what.numberOfDeltas)).decode();
     const payloadType = (new FixedLengthDeltaDecoder(what.payloadTypeDeltas, BigInt(what.payloadType), what.numberOfDeltas)).decode();
     const sequenceNumber = (new FixedLengthDeltaDecoder(what.sequenceNumberDeltas, BigInt(what.sequenceNumber), what.numberOfDeltas)).decode();
     const rtpTimestamp = (new FixedLengthDeltaDecoder(what.rtpTimestampDeltas, BigInt(what.rtpTimestamp), what.numberOfDeltas)).decode();
     const payloadSize = (new FixedLengthDeltaDecoder(what.payloadSizeDeltas, BigInt(what.payloadSize), what.numberOfDeltas)).decode();
-    const ssrc = what.ssrc;
+    const timestampMs = (new FixedLengthDeltaDecoder(what.timestampMsDeltas, BigInt(what.timestampMs), what.numberOfDeltas)).decode();
     // Find header extension ids, rtx ssrc from events.(audio|video)(Send|Recv)StreamConfigs with the associated ssrc.
     // TODO: What about the flexfec SSRC?
-    const config = configs.find(c => c.ssrc === ssrc);
+    //const config = configs.find(c => c.ssrc === ssrc);
     // CSRCS list missing?
     // TODO: decode all the individual header extensions with known names.
-    console.log({padding, marker, payloadType, headerSize, sequenceNumber, rtpTimestamp, payloadSize, ssrc, config});
+    // console.log({padding, marker, payloadType, headerSize, sequenceNumber, rtpTimestamp, payloadSize, ssrc, config});
+    const packets = new Array(timestampMs.length);
+    for (let i = 0; i < timestampMs.length; i++) {
+        packets[i] = {
+            timestampMs: Number(timestampMs[i]),
+            ssrc,
+            headerSize: Number(headerSize[i]),
+            payloadSize: Number(payloadSize[i]),
+            sequenceNumber: Number(sequenceNumber[i]),
+            rtpTimestamp: Number(rtpTimestamp[i]),
+            payloadType: Number(payloadType[i]),
+            marker: marker[i] !== 0n,
+            padding: padding[i] !== 0n,
+            extension: headerSize[i] !== 12n, // TODO: this is not correct when CSRC is present...
+        };
+    }
+    return packets;
 }
 
 function decodeRtcpDelta(what) {
@@ -494,14 +514,40 @@ function decode(events) {
     });
     // TODO: probe failures.
 
-    // write RTCP to PCAP.
+    // RTP handling.
+    const outgoingRtpPackets = events.outgoingRtpPackets
+        .map(decodeRtpDelta)
+        .flat()
+        .sort((a, b) => a.timestampMs - b.timestampMs);
+    outgoingRtpPackets.forEach(packet => packet.incoming = false);
+    window.outgoingRtpPackets = outgoingRtpPackets.slice();
+
+    const incomingRtpPackets = events.incomingRtpPackets
+        .map(decodeRtpDelta)
+        .flat()
+        .sort((a, b) => a.timestampMs - b.timestampMs);
+    incomingRtpPackets.forEach(packet => packet.incoming = true);
+    while (outgoingRtpPackets.length || incomingRtpPackets.length) {
+        let packet;
+        if (!outgoingRtpPackets.length) { // flush incoming packets.
+            packet = incomingRtpPackets.shift();
+        } else if (!incomingRtpPackets.length) { // flush outgoing packets.
+            packet = outgoingRtpPackets.shift();
+        } else if (outgoingRtpPackets[0].timestampMs <= incomingRtpPackets[0].timestampMs) {
+            packet = outgoingRtpPackets.shift();
+        } else {
+            packet = incomingRtpPackets.shift();
+        }
+        countRtp(packet.timestampMs, absoluteStartTimeMs + packet.timestampMs, packet.ssrc, packet.incoming, packet.headerSize, packet.headerSize + packet.payloadSize);
+    }
+    // RTCP handling.
     const outgoingRtcpPackets = events.outgoingRtcpPackets
         .map(decodeRtcpDelta)
         .flat();
     const incomingRtcpPackets = events.incomingRtcpPackets
         .map(decodeRtcpDelta)
         .flat();
-    while (outgoingRtcpPackets.length && incomingRtcpPackets.length) {
+    while (outgoingRtcpPackets.length || incomingRtcpPackets.length) {
         if (!outgoingRtcpPackets.length) { // flush incoming packets.
             const packet = incomingRtcpPackets.shift();
             pcap.write(packet, true, packet.byteLength, absoluteStartTimeMs + packet.timestampMs);
