@@ -136,6 +136,11 @@ const graph = new Highcharts.Chart({
                     'Bitrate estimate: ' + this.point.y + 'bps',
                     'Fraction loss: ' + Math.round(this.point.options.fractionLoss / 255.0 * 100) + '%',
                 ].join('<br>');
+            } else if (['Outbound TWCC Loss Percentage > 0', 'Inbound TWCC Loss Percentage > 0'].includes(this.series.name)) {
+                return [
+                    'Loss percentage: ' + this.point.y + '%',
+                    'Base sequence number: ' + this.point.baseSequenceNumber,
+                ].join('<br>');
             }
             return tooltip.defaultFormatter.call(this, tooltip);
         },
@@ -369,7 +374,7 @@ function decodeLegacy(event, startTimeUs, absoluteStartTimeUs) {
                     twccValues[direction].push({
                         x: absoluteTimeMs,
                         y: Math.floor(100 * lost / result.delta.length),
-                        name: 'baseSeq=' + result.baseSequenceNumber,
+                        baseSequenceNumber: result.baseSequenceNumber,
                     });
                 }},
             );
