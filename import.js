@@ -128,7 +128,7 @@ const graph = new Highcharts.Chart({
                 return [
                     '<b>Delay based update</b>',
                     'Bitrate estimate: ' + this.point.y + 'bps',
-                    'State: ' + {0: 'normal', 1: 'overuse', 2: 'underuse'}[this.point.options.state || 0],
+                    'State: ' + {0: 'unknown', 1: 'normal', 2: 'underuse', 3: 'overuse'}[this.point.options.state || 0],
                 ].join('<br>');
             } else if (this.series.name === 'Loss based updates') {
                 return [
