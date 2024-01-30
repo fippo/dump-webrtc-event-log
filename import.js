@@ -37,7 +37,7 @@ function doImport(event) {
             plot();
             savePCAP(file.name);
             const warning = document.createElement('div');
-            warning.innerText = 'WARNING: new event log format detected, support is still work in progress.';
+            warning.innerText = 'WARNING: new event log format detected, support is still work in progress. Consider using --force-fieldtrials=WebRTC-RtcEventLogNewFormat/Disabled/ to get access to full PCAPs and other features.';
             document.body.appendChild(warning);
         };
     })(event.target.files[0]);
