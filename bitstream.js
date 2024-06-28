@@ -16,6 +16,7 @@ function _decodeVarInt(reader) {
 // TODO: add invalidation flag to help deal with parsing errors.
 class BitstreamReader {
     constructor(data) {
+        let typeOfbuffer = typeof(data.buffer);
         this.view = new DataView(data.buffer, data.byteOffset, data.byteLength);
         this.offset = 0;
         this.remainingBits = data.byteLength * 8;
@@ -131,7 +132,9 @@ class FixedLengthDeltaDecoder {
 // https://source.chromium.org/chromium/chromium/src/+/main:third_party/webrtc/logging/rtc_event_log/encoder/blob_encoding.cc;l=48?q=blob_encoding.cc&ss=chromium%2Fchromium%2Fsrc
 class BlobDecoder {
     constructor(data, numberOfDeltas) {
-        this.reader = new BitstreamReader(data);
+        if(data.length > 0 ) {
+            this.reader =  new BitstreamReader(data);
+        }
         this.data = data;
         this.numberOfDeltas = numberOfDeltas;
     }
@@ -139,14 +142,18 @@ class BlobDecoder {
     decode() {
         const lengths = new Array(this.numberOfDeltas);
         const values = new Array(this.numberOfDeltas);
-        for (let i = 0; i < this.numberOfDeltas; i++) {
-            lengths[i] = Number(_decodeVarInt(this.reader));
+
+        if(this.reader){
+            for (let i = 0; i < this.numberOfDeltas; i++) {
+                lengths[i] = Number(_decodeVarInt(this.reader));
+            }
+            let offset = this.reader.offset;
+            for (let i = 0; i < this.numberOfDeltas; i++) {
+                values[i] = new Uint8Array(this.data.buffer, this.data.byteOffset + offset, lengths[i]);
+                offset += lengths[i];
+            }
         }
-        let offset = this.reader.offset;
-        for (let i = 0; i < this.numberOfDeltas; i++) {
-            values[i] = new Uint8Array(this.data.buffer, this.data.byteOffset + offset, lengths[i]);
-            offset += lengths[i];
-        }
+
         return values;
     }
 }
