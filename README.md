@@ -16,6 +16,10 @@ program which generates a python script.
 This tool lets you import the dumps using just a webpage that processes data locally.
 It can also generate a pcap of the RTP/RTCP packets for inspection in <a href="https://wireshark.org">Wireshark</a>.
 
+# Solving real-world problems with this tool
+Check this WebRTCHacks blog post to get an idea how to use this tool to solve actual problems:
+  https://webrtchacks.com/probing-webrtc-bandwidth-probing-why-and-how-in-gcc/
+
 ## Source of the protobuf file
 The proto file can be found in the webrtc source tree as either
 ```
