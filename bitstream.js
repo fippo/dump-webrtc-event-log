@@ -131,12 +131,16 @@ class FixedLengthDeltaDecoder {
 // https://source.chromium.org/chromium/chromium/src/+/main:third_party/webrtc/logging/rtc_event_log/encoder/blob_encoding.cc;l=48?q=blob_encoding.cc&ss=chromium%2Fchromium%2Fsrc
 class BlobDecoder {
     constructor(data, numberOfDeltas) {
-        this.reader = new BitstreamReader(data);
+        if (data.buffer) {
+            this.reader = new BitstreamReader(data);
+        }
         this.data = data;
         this.numberOfDeltas = numberOfDeltas;
     }
     // See DecodeBlobs
     decode() {
+        if (!this.reader) return [];
+
         const lengths = new Array(this.numberOfDeltas);
         const values = new Array(this.numberOfDeltas);
         for (let i = 0; i < this.numberOfDeltas; i++) {

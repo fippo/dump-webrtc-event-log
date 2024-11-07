@@ -476,7 +476,7 @@ function decodeRtpDelta(what, configs) {
 function decodeRtcpDelta(what) {
     const timestampMs = [what.timestampMs].concat((new FixedLengthDeltaDecoder(what.timestampMsDeltas, BigInt(what.timestampMs), what.numberOfDeltas)).decode());
     const packets = [what.rawPacket]
-        .concat((new BlobDecoder(what.rawPacketBlobs, what.numberOfDeltas)).decode());
+        .concat(what.rawPacketBlobs.length != 0 ? (new BlobDecoder(what.rawPacketBlobs, what.numberOfDeltas)).decode() : []);
     for (let i = 0; i < packets.length; i++) {
         packets[i].timestampMs = Number(timestampMs[i]);
     }
