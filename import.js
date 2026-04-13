@@ -37,7 +37,7 @@ function doImport(event) {
             plot();
             savePCAP(file.name);
             const warning = document.createElement('div');
-            warning.innerText = 'WARNING: new event log format detected, support is still work in progress. Consider using --force-fieldtrials=WebRTC-RtcEventLogNewFormat/Disabled/ to get access to full PCAPs and other features.';
+            warning.innerText = 'NOTE: new event log format detected.';
             document.body.appendChild(warning);
         };
     })(event.target.files[0]);
@@ -66,6 +66,7 @@ Promise.all([
             }
 
             protoRootV2 = root;
+            resolve();
         });
     }),
 ]).then(() => {
@@ -159,7 +160,6 @@ if (searchParams.has('export')) {
         },
     };
 }
-const graph = new Highcharts.Chart(options);
 
 let basetime;
 const bweProbeClusters = [];
@@ -189,31 +189,181 @@ const rtcpRoundTripTime = {};
 const pcap = new PCAPWriter();
 const perSsrcByteCount = {};
 const bitrateSeries = {};
+const rtxSsrcs = new Set();
+
+let graph;
+if (typeof Highcharts !== 'undefined') {
+    graph = new Highcharts.Chart(options);
+}
 
 function countRtp(relativeTimeMs, absoluteTimeMs, ssrc, incoming, headerLength, packetLength) {
     if (!perSsrcByteCount[ssrc]) {
-        perSsrcByteCount[ssrc] = [0, relativeTimeMs];
+        perSsrcByteCount[ssrc] = [0, relativeTimeMs, absoluteTimeMs];
         bitrateSeries[ssrc] = [[absoluteTimeMs, 0]];
         bitrateSeries[ssrc].incoming = incoming;
         // TODO: extract payload type to infer media type.
     }
     perSsrcByteCount[ssrc][0] += packetLength - headerLength;
+    perSsrcByteCount[ssrc][2] = absoluteTimeMs;
     if (relativeTimeMs - perSsrcByteCount[ssrc][1] > 1000) {
         bitrateSeries[ssrc].push([absoluteTimeMs, 8000 * perSsrcByteCount[ssrc][0] / (relativeTimeMs - perSsrcByteCount[ssrc][1])]);
-        perSsrcByteCount[ssrc] = [0, relativeTimeMs];
+        perSsrcByteCount[ssrc] = [0, relativeTimeMs, absoluteTimeMs];
     }
 
     // Cumulated bitrate graphs.
     const direction = incoming ? 'total_incoming' : 'total_outgoing';
     if (!perSsrcByteCount[direction]) {
-        perSsrcByteCount[direction] = [0, relativeTimeMs];
+        perSsrcByteCount[direction] = [0, relativeTimeMs, absoluteTimeMs];
         bitrateSeries[direction] = [[absoluteTimeMs, 0]];
+        bitrateSeries[direction].incoming = incoming;
     }
     perSsrcByteCount[direction][0] += packetLength - headerLength;
+    perSsrcByteCount[direction][2] = absoluteTimeMs;
     if (relativeTimeMs - perSsrcByteCount[direction][1] > 1000) {
         bitrateSeries[direction].push([absoluteTimeMs, 8000 * perSsrcByteCount[direction][0] / (relativeTimeMs - perSsrcByteCount[direction][1])]);
-        perSsrcByteCount[direction] = [0, relativeTimeMs];
+        perSsrcByteCount[direction] = [0, relativeTimeMs, absoluteTimeMs];
     }
+}
+
+function analyzeRtcp(packetData, incoming, absoluteTimeMs, absoluteTimeUs) {
+    const direction = incoming ? 'inbound' : 'outbound';
+    RTCP.forEach(packetData,
+        {payloadType: RTCP.PT_PSFB, feedbackMessageType: RTCP.FMT_PLI, filter: (decoded) => {
+            pictureLossIndications[direction].push({
+                x: absoluteTimeMs,
+                y: incoming ? 1 : 0, // TODO: maybe use one y value per ssrc?
+                name: 'ssrc=' + decoded.synchronizationSource,
+            });
+        }},
+        {payloadType: RTCP.PT_PSFB, feedbackMessageType: RTCP.FMT_ALFB, filter: (decoded, view) => {
+            // https://datatracker.ietf.org/doc/html/draft-alvestrand-rmcat-remb-03#section-2
+            if (view.getUint32(12) != 0x52454d42) {
+                // REMB literal.
+                return;
+            }
+            const exponent = view.getUint8(17) >> 2;
+            const mantissa = view.getUint32(16) & 0x0003ffff;
+            const remb = mantissa * Math.pow(2, exponent);
+            rembValues[direction].push({
+                x: absoluteTimeMs,
+                y: remb,
+                name: 'ssrc=' + decoded.synchronizationSource,
+            });
+        }},
+        {payloadType: RTCP.PT_SR, filter: (decoded, view) => {
+            // https://www.rfc-editor.org/rfc/rfc3550#section-6.4.1
+            if (!rtcpSenderReport[decoded.synchronizationSource]) {
+                rtcpSenderReport[decoded.synchronizationSource] = [];
+                // TODO: include direction?
+            }
+            const report = {
+                ntpTimestamp: view.getBigUint64(8),
+                ntpTimestampMiddleBits: view.getUint32(10),
+                rtpTimestamp: view.getUint32(12),
+                packetCount: view.getUint32(16),
+                octetCount: view.getUint32(20),
+                absoluteSendTimeUs: BigInt(absoluteTimeUs + NtpToEpochUs),
+            };
+
+            // Store so we can find it later.
+            rtcpSenderReport[decoded.synchronizationSource].push(report);
+
+            // Parse report blocks (uncommon in libWebRTC) to determine RTT.
+            if (incoming === false) {
+                // Don't try parsing report blocks on outbound SRs.
+                return;
+            }
+            const reports = RTCP.decodeReceiverReportBlocks(view, true);
+            reports.forEach(report => {
+                if (!rtcpReceiverReport[report.synchronizationSource]) {
+                    rtcpReceiverReport[report.synchronizationSource] = [];
+                    // TODO: include direction?
+                }
+                let name = 'ssrc=' + report.synchronizationSource;
+                rtcpReceiverReport[report.synchronizationSource].push({
+                    x: absoluteTimeMs, // TODO: actually the time from the RR?
+                    y: report.fractionLost,
+                    name,
+                });
+            });
+            if (incoming === false && decoded.payloadType === RTCP.PT_RR) {
+                // Can not calculate RTT on outbound RR, this will always result in 0.
+                return;
+            }
+            reports.forEach(report => {
+                if (report.dlsr === 0) return;
+                if (!rtcpSenderReport[report.synchronizationSource]) {
+                    return;
+                }
+                const associatedSenderReport = rtcpSenderReport[report.synchronizationSource]
+                    .find(sr => sr.ntpTimestampMiddleBits === report.lsr);
+                if (associatedSenderReport) {
+                    const rttAbsoluteUs = BigInt(absoluteTimeUs + NtpToEpochUs) - associatedSenderReport.absoluteSendTimeUs;
+                    const dlsr = BigInt(Math.floor(report.dlsr / 65536 * 1e+6));
+                    if (!rtcpRoundTripTime[report.synchronizationSource]) {
+                        rtcpRoundTripTime[report.synchronizationSource] = [];
+                    }
+                    rtcpRoundTripTime[report.synchronizationSource].push({
+                        x: absoluteTimeMs,
+                        y: Number(rttAbsoluteUs - dlsr) / 1e+6,
+                    });
+                }
+            });
+        }},
+        {payloadType: RTCP.PT_RR, filter: (decoded, view) => {
+            // https://www.rfc-editor.org/rfc/rfc3550#section-6.4.2
+            const reports = RTCP.decodeReceiverReportBlocks(view, false);
+            if (!reports) return;
+            reports.forEach(report => {
+                if (!rtcpReceiverReport[report.synchronizationSource]) {
+                    rtcpReceiverReport[report.synchronizationSource] = [];
+                    // TODO: include direction?
+                }
+                let name = 'ssrc=' + report.synchronizationSource;
+                rtcpReceiverReport[report.synchronizationSource].push({
+                    x: absoluteTimeMs, // TODO: actually the time from the RR?
+                    y: report.fractionLost,
+                    name,
+                });
+            });
+            if (incoming === false && decoded.payloadType === RTCP.PT_RR) {
+                // Can not calculate RTT on outbound RR, this will always result in 0.
+                return;
+            }
+            reports.forEach(report => {
+                if (report.dlsr === 0) return;
+                if (!rtcpSenderReport[report.synchronizationSource]) {
+                    return;
+                }
+                const associatedSenderReport = rtcpSenderReport[report.synchronizationSource]
+                    .find(sr => sr.ntpTimestampMiddleBits === report.lsr);
+                if (associatedSenderReport) {
+                    const rttAbsoluteUs = BigInt(absoluteTimeUs + NtpToEpochUs) - associatedSenderReport.absoluteSendTimeUs;
+                    const dlsr = BigInt(Math.floor(report.dlsr / 65536 * 1e+6));
+                    if (!rtcpRoundTripTime[report.synchronizationSource]) {
+                        rtcpRoundTripTime[report.synchronizationSource] = [];
+                    }
+                    rtcpRoundTripTime[report.synchronizationSource].push({
+                        x: absoluteTimeMs,
+                        y: Number(rttAbsoluteUs - dlsr) / 1e+6,
+                    });
+                }
+            });
+        }},
+        {payloadType: RTCP.PT_RTPFB, feedbackMessageType: RTCP.FMT_ALFB, filter: (decoded, view) => {
+            const result = RTCP.decodeTransportCC(view);
+            if (!result) {
+                return;
+            }
+            const lost = result.delta.reduce((count, delta) => delta === false ? count + 1 : count, 0);
+            if (lost === 0) return;
+            twccValues[direction].push({
+                x: absoluteTimeMs,
+                y: Math.floor(100 * lost / result.delta.length),
+                baseSequenceNumber: result.baseSequenceNumber,
+            });
+        }},
+    );
 }
 
 function decodeLegacy(event, startTimeUs, absoluteStartTimeUs) {
@@ -242,154 +392,7 @@ function decodeLegacy(event, startTimeUs, absoluteStartTimeUs) {
             break;
         case 4: //'RTCP_EVENT':
             pcap.write(event.rtcpPacket.packetData, event.rtcpPacket.incoming, event.rtcpPacket.packetData.byteLength, absoluteStartTimeUs + event.timestampUs - startTimeUs);
-            RTCP.forEach(event.rtcpPacket.packetData,
-                {payloadType: RTCP.PT_PFB, feedbackMessageType: RTCP.FMT_PLI, filter: (decoded) => {
-                    pictureLossIndications[event.rtcpPacket.incoming ? 'inbound' : 'outbound'].push({
-                        x: absoluteTimeMs,
-                        y: event.rtcpPacket.incoming ? 1 : 0, // TODO: maybe use one y value per ssrc?
-                        name: 'ssrc=' + decoded.synchronizationSource,
-                    });
-                }},
-                {payloadType: RTCP.PT_PSFB, feedbackMessageType: RTCP.FMT_ALFB, filter: (decoded, view) => {
-                    // https://datatracker.ietf.org/doc/html/draft-alvestrand-rmcat-remb-03#section-2
-                    if (view.getUint32(12) != 0x52454d42) {
-                        // REMB literal.
-                        return;
-                    }
-                    const exponent = view.getUint8(17) >> 2;
-                    const mantissa = view.getUint32(16) & 0x0003ffff;
-                    const remb = mantissa * Math.pow(2, exponent);
-                    rembValues[event.rtcpPacket.incoming ? 'inbound' : 'outbound'].push({
-                        x: absoluteTimeMs,
-                        y: remb,
-                        name: 'ssrc=' + decoded.synchronizationSource,
-                    });
-                }},
-                {payloadType: RTCP.PT_SR, filter: (decoded, view) => {
-                    // https://www.rfc-editor.org/rfc/rfc3550#section-6.4.1
-                    if (!rtcpSenderReport[decoded.synchronizationSource]) {
-                        rtcpSenderReport[decoded.synchronizationSource] = [];
-                        // TODO: include direction?
-                    }
-                    const report = {
-                        ntpTimestamp: view.getBigUint64(8),
-                        ntpTimestampMiddleBits: view.getUint32(10),
-                        rtpTimestamp: view.getUint32(12),
-                        packetCount: view.getUint32(16),
-                        octetCount: view.getUint32(20),
-                        absoluteSendTimeUs: BigInt(absoluteTimeUs + NtpToEpochUs),
-                    };
-
-                    // Store so we can find it later.
-                    rtcpSenderReport[decoded.synchronizationSource].push(report);
-
-                    // Parse report blocks (uncommon in libWebRTC) to determine RTT.
-                    if (event.rtcpPacket.incoming === false) {
-                        // Don't try parsing report blocks on outbound SRs.
-                        return;
-                    }
-                    const reports = RTCP.decodeReceiverReportBlocks(view, true);
-                    reports.forEach(report => {
-                        if (!rtcpReceiverReport[report.synchronizationSource]) {
-                            rtcpReceiverReport[report.synchronizationSource] = [];
-                            // TODO: include direction?
-                        }
-                        let name = 'ssrc=' + report.synchronizationSource;
-                        rtcpReceiverReport[report.synchronizationSource].push({
-                            x: absoluteTimeMs, // TODO: actually the time from the RR?
-                            y: report.fractionLost,
-                            name,
-                        });
-                    });
-                    if (event.rtcpPacket.incoming === false && decoded.payloadType === RTCP.PT_RR) {
-                        // Can not calculate RTT on outbound RR, this will always result in 0.
-                        return;
-                    }
-                    reports.forEach(report => {
-                        if (report.dlsr === 0) return;
-                        // If DLSR is set, do RTT calculation as described in
-                        // https://www.rfc-editor.org/rfc/rfc3550#section-6.4.1
-                        // alternatively: https://source.chromium.org/chromium/chromium/src/+/refs/heads/main:third_party/webrtc/modules/rtp_rtcp/source/rtcp_receiver.cc;l=609;drc=25f2ea1a864270fef1c96c014f552f1459280ac1;bpv=1;bpt=1
-                        // But we have clock offset issues so we look at the local time we sent the SR.
-                        if (!rtcpSenderReport[report.synchronizationSource]) {
-                            // libWebRTC does not send SRs for RTX so there can be RRs without SRs)
-                            return;
-                        }
-                        const associatedSenderReport = rtcpSenderReport[report.synchronizationSource]
-                            .find(sr => sr.ntpTimestampMiddleBits === report.lsr);
-                        if (associatedSenderReport) {
-                            const rttAbsoluteUs = BigInt(absoluteTimeUs + NtpToEpochUs) - associatedSenderReport.absoluteSendTimeUs;
-                            const dlsr = BigInt(Math.floor(report.dlsr / 65536 * 1e+6));
-                            if (!rtcpRoundTripTime[report.synchronizationSource]) {
-                                rtcpRoundTripTime[report.synchronizationSource] = [];
-                            }
-                            rtcpRoundTripTime[report.synchronizationSource].push({
-                                x: absoluteTimeMs,
-                                y: Number(rttAbsoluteUs - dlsr) / 1e+6,
-                            });
-                        }
-                    });
-                }},
-                {payloadType: RTCP.PT_RR, filter: (decoded, view) => {
-                    // https://www.rfc-editor.org/rfc/rfc3550#section-6.4.2
-                    const reports = RTCP.decodeReceiverReportBlocks(view, false);
-                    if (!reports) return;
-                    reports.forEach(report => {
-                        if (!rtcpReceiverReport[report.synchronizationSource]) {
-                            rtcpReceiverReport[report.synchronizationSource] = [];
-                            // TODO: include direction?
-                        }
-                        let name = 'ssrc=' + report.synchronizationSource;
-                        rtcpReceiverReport[report.synchronizationSource].push({
-                            x: absoluteTimeMs, // TODO: actually the time from the RR?
-                            y: report.fractionLost,
-                            name,
-                        });
-                    });
-                    if (event.rtcpPacket.incoming === false && decoded.payloadType === RTCP.PT_RR) {
-                        // Can not calculate RTT on outbound RR, this will always result in 0.
-                        return;
-                    }
-                    reports.forEach(report => {
-                        if (report.dlsr === 0) return;
-                        // If DLSR is set, do RTT calculation as described in
-                        // https://www.rfc-editor.org/rfc/rfc3550#section-6.4.1
-                        // alternatively: https://source.chromium.org/chromium/chromium/src/+/refs/heads/main:third_party/webrtc/modules/rtp_rtcp/source/rtcp_receiver.cc;l=609;drc=25f2ea1a864270fef1c96c014f552f1459280ac1;bpv=1;bpt=1
-                        // But we have clock offset issues so we look at the local time we sent the SR.
-                        if (!rtcpSenderReport[report.synchronizationSource]) {
-                            // libWebRTC does not send SRs for RTX so there can be RRs without SRs)
-                            return;
-                        }
-                        const associatedSenderReport = rtcpSenderReport[report.synchronizationSource]
-                            .find(sr => sr.ntpTimestampMiddleBits === report.lsr);
-                        if (associatedSenderReport) {
-                            const rttAbsoluteUs = BigInt(absoluteTimeUs + NtpToEpochUs) - associatedSenderReport.absoluteSendTimeUs;
-                            const dlsr = BigInt(Math.floor(report.dlsr / 65536 * 1e+6));
-                            if (!rtcpRoundTripTime[report.synchronizationSource]) {
-                                rtcpRoundTripTime[report.synchronizationSource] = [];
-                            }
-                            rtcpRoundTripTime[report.synchronizationSource].push({
-                                x: absoluteTimeMs,
-                                y: Number(rttAbsoluteUs - dlsr) / 1e+6,
-                            });
-                        }
-                    });
-                }},
-                {payloadType: RTCP.PT_RTPFB, feedbackMessageType: RTCP.FMT_ALFB, filter: (decoded, view) => {
-                    const direction = event.rtcpPacket.incoming ? 'inbound' : 'outbound';
-                    const result = RTCP.decodeTransportCC(view);
-                    if (!result) {
-                        return;
-                    }
-                    const lost = result.delta.reduce((count, delta) => delta === false ? count + 1 : count, 0);
-                    if (lost === 0) return;
-                    twccValues[direction].push({
-                        x: absoluteTimeMs,
-                        y: Math.floor(100 * lost / result.delta.length),
-                        baseSequenceNumber: result.baseSequenceNumber,
-                    });
-                }},
-            );
+            analyzeRtcp(event.rtcpPacket.packetData, event.rtcpPacket.incoming, absoluteTimeMs, absoluteTimeUs);
             break;
         case 5: // audio playout event, ignore
             break;
@@ -438,37 +441,66 @@ function decodeLegacy(event, startTimeUs, absoluteStartTimeUs) {
     }
 }
 
-function decodeRtpDelta(what, configs) {
-    const ssrc = what.ssrc;
+function decodeDelta(deltas, base, numberOfDeltas) {
+    return [base].concat((new FixedLengthDeltaDecoder(deltas, base, numberOfDeltas)).decode());
+}
 
-    const padding = (new FixedLengthDeltaDecoder(what.paddingSizeDeltas, BigInt(what.paddingSize), what.numberOfDeltas)).decode();
-    const headerSize = (new FixedLengthDeltaDecoder(what.headerSizeDeltas, BigInt(what.headerSize), what.numberOfDeltas)).decode();
-    const marker = (new FixedLengthDeltaDecoder(what.markerDeltas, what.marker ? 1n : 0n, what.numberOfDeltas)).decode();
-    const payloadType = (new FixedLengthDeltaDecoder(what.payloadTypeDeltas, BigInt(what.payloadType), what.numberOfDeltas)).decode();
-    const sequenceNumber = (new FixedLengthDeltaDecoder(what.sequenceNumberDeltas, BigInt(what.sequenceNumber), what.numberOfDeltas)).decode();
-    const rtpTimestamp = (new FixedLengthDeltaDecoder(what.rtpTimestampDeltas, BigInt(what.rtpTimestamp), what.numberOfDeltas)).decode();
-    const payloadSize = (new FixedLengthDeltaDecoder(what.payloadSizeDeltas, BigInt(what.payloadSize), what.numberOfDeltas)).decode();
-    const timestampMs = (new FixedLengthDeltaDecoder(what.timestampMsDeltas, BigInt(what.timestampMs), what.numberOfDeltas)).decode();
-    // Find header extension ids, rtx ssrc from events.(audio|video)(Send|Recv)StreamConfigs with the associated ssrc.
-    // TODO: What about the flexfec SSRC?
-    //const config = configs.find(c => c.ssrc === ssrc);
-    // CSRCS list missing?
-    // TODO: decode all the individual header extensions with known names.
-    // console.log({padding, marker, payloadType, headerSize, sequenceNumber, rtpTimestamp, payloadSize, ssrc, config});
+// Returns null if the field is not present in the proto message.
+function decodeOptionalDelta(what, fieldName, deltasFieldName, numberOfDeltas) {
+    if (!what.hasOwnProperty(fieldName) && (!what[deltasFieldName] || what[deltasFieldName].length === 0)) return null;
+    const base = BigInt(what[fieldName] || 0);
+    return [base].concat((new FixedLengthDeltaDecoder(what[deltasFieldName], base, numberOfDeltas)).decode());
+}
+
+function decodeRtpDelta(what) {
+    const n = what.numberOfDeltas;
+    const timestampMs = decodeDelta(what.timestampMsDeltas, BigInt(what.timestampMs), n);
+    const ssrc = decodeDelta(what.ssrcDeltas, BigInt(what.ssrc), n);
+    const padding = decodeDelta(what.paddingSizeDeltas, BigInt(what.paddingSize), n);
+    const headerSize = decodeDelta(what.headerSizeDeltas, BigInt(what.headerSize), n);
+    const marker = decodeDelta(what.markerDeltas, what.marker ? 1n : 0n, n);
+    const payloadType = decodeDelta(what.payloadTypeDeltas, BigInt(what.payloadType), n);
+    const sequenceNumber = decodeDelta(what.sequenceNumberDeltas, BigInt(what.sequenceNumber), n);
+    const rtpTimestamp = decodeDelta(what.rtpTimestampDeltas, BigInt(what.rtpTimestamp), n);
+    const payloadSize = decodeDelta(what.payloadSizeDeltas, BigInt(what.payloadSize), n);
+
+    // Header extension values (optional — may not be present in every batch).
+    // Use hasOwnProperty to distinguish "field absent" from "field is 0/false".
+    const transportSequenceNumber = decodeOptionalDelta(what, 'transportSequenceNumber', 'transportSequenceNumberDeltas', n);
+    const transmissionTimeOffset = decodeOptionalDelta(what, 'transmissionTimeOffset', 'transmissionTimeOffsetDeltas', n);
+    const absoluteSendTime = decodeOptionalDelta(what, 'absoluteSendTime', 'absoluteSendTimeDeltas', n);
+    const videoRotation = decodeOptionalDelta(what, 'videoRotation', 'videoRotationDeltas', n);
+    const audioLevel = decodeOptionalDelta(what, 'audioLevel', 'audioLevelDeltas', n);
+    const voiceActivity = decodeOptionalDelta(what, 'voiceActivity', 'voiceActivityDeltas', n);
+    const probeClusterId = decodeOptionalDelta(what, 'probeClusterId', 'probeClusterIdDeltas', n);
+    const rtxOriginalSequenceNumber = decodeOptionalDelta(what, 'rtxOriginalSequenceNumber', 'rtxOriginalSequenceNumberDeltas', n);
+
     const packets = new Array(timestampMs.length);
     for (let i = 0; i < timestampMs.length; i++) {
         packets[i] = {
             timestampMs: Number(timestampMs[i]),
-            ssrc,
+            ssrc: Number(ssrc[i]),
             headerSize: Number(headerSize[i]),
             payloadSize: Number(payloadSize[i]),
+            paddingSize: Number(padding[i]),
             sequenceNumber: Number(sequenceNumber[i]),
             rtpTimestamp: Number(rtpTimestamp[i]),
             payloadType: Number(payloadType[i]),
             marker: marker[i] !== 0n,
-            padding: padding[i] !== 0n,
-            extension: headerSize[i] !== 12n, // TODO: this is not correct when CSRC is present...
+            hasPadding: padding[i] !== 0n,
+            hasExtension: headerSize[i] > 12n,
         };
+        // Attach header extension values if present.
+        if (transportSequenceNumber) packets[i].transportSequenceNumber = Number(transportSequenceNumber[i]);
+        if (transmissionTimeOffset) packets[i].transmissionTimeOffset = Number(transmissionTimeOffset[i]);
+        if (absoluteSendTime) packets[i].absoluteSendTime = Number(absoluteSendTime[i]);
+        if (videoRotation) packets[i].videoRotation = Number(videoRotation[i]);
+        if (audioLevel) {
+            packets[i].audioLevel = Number(audioLevel[i]);
+            packets[i].voiceActivity = voiceActivity ? voiceActivity[i] !== 0n : false;
+        }
+        if (probeClusterId) packets[i].probeClusterId = Number(probeClusterId[i]);
+        if (rtxOriginalSequenceNumber) packets[i].rtxOriginalSequenceNumber = Number(rtxOriginalSequenceNumber[i]);
     }
     return packets;
 }
@@ -481,6 +513,146 @@ function decodeRtcpDelta(what) {
         packets[i].timestampMs = Number(timestampMs[i]);
     }
     return packets;
+}
+
+// Build a map from SSRC to RtpHeaderExtensionConfig from stream config events.
+function buildExtensionIdMap(events) {
+    const map = {}; // ssrc => {transportSequenceNumberId, absoluteSendTimeId, ...}
+    const register = (ssrc, headerExtensions) => {
+        if (!headerExtensions) return;
+        map[ssrc] = {
+            transportSequenceNumberId: headerExtensions.transportSequenceNumberId || 0,
+            absoluteSendTimeId: headerExtensions.absoluteSendTimeId || 0,
+            transmissionTimeOffsetId: headerExtensions.transmissionTimeOffsetId || 0,
+            videoRotationId: headerExtensions.videoRotationId || 0,
+            audioLevelId: headerExtensions.audioLevelId || 0,
+        };
+    };
+    // Send configs: SSRC is the outgoing stream's own SSRC.
+    (events.videoSendStreamConfigs || []).forEach(c => {
+        register(c.ssrc, c.headerExtensions);
+        if (c.rtxSsrc) register(c.rtxSsrc, c.headerExtensions);
+    });
+    (events.audioSendStreamConfigs || []).forEach(c => {
+        register(c.ssrc, c.headerExtensions);
+    });
+    // Recv configs: remote_ssrc is the SSRC of the incoming RTP stream.
+    (events.videoRecvStreamConfigs || []).forEach(c => {
+        register(c.remoteSsrc, c.headerExtensions);
+        if (c.rtxSsrc) register(c.rtxSsrc, c.headerExtensions);
+    });
+    (events.audioRecvStreamConfigs || []).forEach(c => {
+        register(c.remoteSsrc, c.headerExtensions);
+    });
+    return map;
+}
+
+// Reconstruct an RTP packet (header + zero-filled payload + padding) from decoded metadata.
+function reconstructRtpPacket(packet, extensionIdMap) {
+    const config = extensionIdMap[packet.ssrc] || {};
+
+    // Build the list of extensions to include.
+    const extensions = [];
+    if (config.transportSequenceNumberId && packet.transportSequenceNumber !== undefined) {
+        extensions.push({id: config.transportSequenceNumberId, size: 2, write: (view, off) => view.setUint16(off, packet.transportSequenceNumber)});
+    }
+    if (config.absoluteSendTimeId && packet.absoluteSendTime !== undefined) {
+        extensions.push({id: config.absoluteSendTimeId, size: 3, write: (view, off) => {
+            view.setUint8(off, (packet.absoluteSendTime >> 16) & 0xff);
+            view.setUint8(off + 1, (packet.absoluteSendTime >> 8) & 0xff);
+            view.setUint8(off + 2, packet.absoluteSendTime & 0xff);
+        }});
+    }
+    if (config.transmissionTimeOffsetId && packet.transmissionTimeOffset !== undefined) {
+        extensions.push({id: config.transmissionTimeOffsetId, size: 3, write: (view, off) => {
+            const val = packet.transmissionTimeOffset & 0xffffff;
+            view.setUint8(off, (val >> 16) & 0xff);
+            view.setUint8(off + 1, (val >> 8) & 0xff);
+            view.setUint8(off + 2, val & 0xff);
+        }});
+    }
+    if (config.videoRotationId && packet.videoRotation !== undefined) {
+        extensions.push({id: config.videoRotationId, size: 1, write: (view, off) => view.setUint8(off, packet.videoRotation)});
+    }
+    if (config.audioLevelId && packet.audioLevel !== undefined) {
+        // RFC 6464: V flag (1 bit) + level (7 bits)
+        const byte = (packet.voiceActivity ? 0x80 : 0x00) | (packet.audioLevel & 0x7f);
+        extensions.push({id: config.audioLevelId, size: 1, write: (view, off) => view.setUint8(off, byte)});
+    }
+
+    // Calculate extension block size.
+    const hasExtensions = extensions.length > 0;
+    let extensionDataBytes = 0;
+    if (hasExtensions) {
+        for (const ext of extensions) {
+            extensionDataBytes += 1 + ext.size; // 1 byte header + data
+        }
+        // Pad to 4-byte boundary.
+        extensionDataBytes = Math.ceil(extensionDataBytes / 4) * 4;
+    }
+    const extensionBlockSize = hasExtensions ? 4 + extensionDataBytes : 0; // 4 bytes for profile + length word
+
+    const fixedHeaderSize = 12;
+    const headerSize = fixedHeaderSize + extensionBlockSize;
+    const totalSize = headerSize + packet.payloadSize + packet.paddingSize;
+    const buf = new Uint8Array(totalSize);
+    const view = new DataView(buf.buffer);
+
+    // Fixed header: V=2, P, X, CC=0, M, PT, seq, timestamp, SSRC
+    let byte0 = 0x80; // version 2
+    if (packet.hasPadding && packet.paddingSize > 0) byte0 |= 0x20;
+    if (hasExtensions) byte0 |= 0x10;
+    view.setUint8(0, byte0);
+
+    let byte1 = packet.payloadType & 0x7f;
+    if (packet.marker) byte1 |= 0x80;
+    view.setUint8(1, byte1);
+
+    view.setUint16(2, packet.sequenceNumber & 0xffff);
+    view.setUint32(4, packet.rtpTimestamp >>> 0);
+    view.setUint32(8, packet.ssrc >>> 0);
+
+    // One-byte header extension block (RFC 5285).
+    if (hasExtensions) {
+        view.setUint16(12, 0xBEDE); // one-byte header profile
+        view.setUint16(14, extensionDataBytes / 4); // length in 32-bit words
+        let offset = 16;
+        for (const ext of extensions) {
+            view.setUint8(offset, (ext.id << 4) | ((ext.size - 1) & 0x0f));
+            offset++;
+            ext.write(view, offset);
+            offset += ext.size;
+        }
+        // Remaining bytes to the 4-byte boundary are already zero (padding).
+    }
+
+    // Payload is zero-filled (already zero from Uint8Array constructor).
+
+    // Padding: last byte must equal the padding size per RFC 3550.
+    if (packet.hasPadding && packet.paddingSize > 0) {
+        buf[totalSize - 1] = packet.paddingSize;
+    }
+
+    return buf;
+}
+
+// Merge N sorted arrays by timestampMs using a simple k-way merge.
+function mergeByTimestamp(...arrays) {
+    const indices = arrays.map(() => 0);
+    const totalLength = arrays.reduce((sum, arr) => sum + arr.length, 0);
+    const result = new Array(totalLength);
+    for (let r = 0; r < totalLength; r++) {
+        let minIdx = -1;
+        let minTs = Infinity;
+        for (let k = 0; k < arrays.length; k++) {
+            if (indices[k] < arrays[k].length && arrays[k][indices[k]].timestampMs < minTs) {
+                minTs = arrays[k][indices[k]].timestampMs;
+                minIdx = k;
+            }
+        }
+        result[r] = arrays[minIdx][indices[minIdx]++];
+    }
+    return result;
 }
 
 function decodeLossBasedBweUpdate(what) {
@@ -531,54 +703,72 @@ function decode(events) {
     });
     // TODO: probe failures.
 
-    // RTP handling.
+    // Build RTX SSRC set from stream configs.
+    (events.videoSendStreamConfigs || []).forEach(c => { if (c.rtxSsrc) rtxSsrcs.add(c.rtxSsrc); });
+    (events.videoRecvStreamConfigs || []).forEach(c => { if (c.rtxSsrc) rtxSsrcs.add(c.rtxSsrc); });
+
+    // Build SSRC => header extension ID mapping from stream configs.
+    const extensionIdMap = buildExtensionIdMap(events);
+
+    // Decode RTP packets.
     const outgoingRtpPackets = events.outgoingRtpPackets
         .map(decodeRtpDelta)
         .flat()
         .sort((a, b) => a.timestampMs - b.timestampMs);
-    outgoingRtpPackets.forEach(packet => packet.incoming = false);
+    outgoingRtpPackets.forEach(packet => {
+        packet.incoming = false; packet.type = 'rtp';
+        if (!rtxSsrcs.has(packet.ssrc) && packet.rtxOriginalSequenceNumber !== undefined) rtxSsrcs.add(packet.ssrc);
+    });
     window.outgoingRtpPackets = outgoingRtpPackets.slice();
+
+    // Populate probe cluster to packet mapping from outgoing RTP packets.
+    outgoingRtpPackets.forEach(packet => {
+        if (packet.probeClusterId != null) {
+            const cluster = packet.probeClusterId;
+            if (!bweProbeClusterToPackets[cluster]) {
+                bweProbeClusterToPackets[cluster] = [];
+            }
+            const twccSeqNum = packet.transportSequenceNumber;
+            const packetLength = packet.headerSize + packet.payloadSize + packet.paddingSize;
+            bweProbeClusterToPackets[cluster].push([twccSeqNum, packetLength]);
+        }
+    });
 
     const incomingRtpPackets = events.incomingRtpPackets
         .map(decodeRtpDelta)
         .flat()
         .sort((a, b) => a.timestampMs - b.timestampMs);
-    incomingRtpPackets.forEach(packet => packet.incoming = true);
-    while (outgoingRtpPackets.length || incomingRtpPackets.length) {
-        let packet;
-        if (!outgoingRtpPackets.length) { // flush incoming packets.
-            packet = incomingRtpPackets.shift();
-        } else if (!incomingRtpPackets.length) { // flush outgoing packets.
-            packet = outgoingRtpPackets.shift();
-        } else if (outgoingRtpPackets[0].timestampMs <= incomingRtpPackets[0].timestampMs) {
-            packet = outgoingRtpPackets.shift();
-        } else {
-            packet = incomingRtpPackets.shift();
-        }
-        countRtp(packet.timestampMs, absoluteStartTimeMs + packet.timestampMs, packet.ssrc, packet.incoming, packet.headerSize, packet.headerSize + packet.payloadSize);
-    }
-    // RTCP handling.
+    incomingRtpPackets.forEach(packet => {
+        packet.incoming = true; packet.type = 'rtp';
+        if (!rtxSsrcs.has(packet.ssrc) && packet.rtxOriginalSequenceNumber !== undefined) rtxSsrcs.add(packet.ssrc);
+    });
+
+    // Decode RTCP packets.
     const outgoingRtcpPackets = events.outgoingRtcpPackets
         .map(decodeRtcpDelta)
-        .flat();
+        .flat()
+        .sort((a, b) => a.timestampMs - b.timestampMs);
+    outgoingRtcpPackets.forEach(packet => { packet.incoming = false; packet.type = 'rtcp'; });
+
     const incomingRtcpPackets = events.incomingRtcpPackets
         .map(decodeRtcpDelta)
-        .flat();
-    while (outgoingRtcpPackets.length || incomingRtcpPackets.length) {
-        if (!outgoingRtcpPackets.length) { // flush incoming packets.
-            const packet = incomingRtcpPackets.shift();
-            pcap.write(packet, true, packet.byteLength, absoluteStartTimeMs + packet.timestampMs);
-        } else if (!incomingRtcpPackets.length) { // flush outgoing packets.
-            const packet = outgoingRtcpPackets.shift();
-            pcap.write(packet, false, packet.byteLength, absoluteStartTimeMs + packet.timestampMs);
-        } else if (outgoingRtcpPackets[0].timestampMs <= incomingRtcpPackets[0].timestampMs) {
-            // write outgoing packet.
-            const packet = outgoingRtcpPackets.shift();
-            pcap.write(packet, false, packet.byteLength, absoluteStartTimeMs + packet.timestampMs);
+        .flat()
+        .sort((a, b) => a.timestampMs - b.timestampMs);
+    incomingRtcpPackets.forEach(packet => { packet.incoming = true; packet.type = 'rtcp'; });
+
+    // Unified merge of all RTP and RTCP packets in timestamp order, write to pcap.
+    const allPackets = mergeByTimestamp(outgoingRtpPackets, incomingRtpPackets, outgoingRtcpPackets, incomingRtcpPackets);
+    for (const packet of allPackets) {
+        const absoluteTimeMs = absoluteStartTimeMs + packet.timestampMs;
+        const timestampUs = absoluteTimeMs * 1000;
+        if (packet.type === 'rtp') {
+            const reconstructed = reconstructRtpPacket(packet, extensionIdMap);
+            pcap.write(reconstructed, packet.incoming, reconstructed.byteLength, timestampUs);
+            countRtp(packet.timestampMs, absoluteTimeMs, packet.ssrc, packet.incoming, packet.headerSize, packet.headerSize + packet.payloadSize + packet.paddingSize);
         } else {
-            // write incoming packet.
-            const packet = incomingRtcpPackets.shift();
-            pcap.write(packet, true, packet.byteLength, absoluteStartTimeMs + packet.timestampMs);
+            // RTCP: packet is a Uint8Array with timestampMs attached.
+            pcap.write(packet, packet.incoming, packet.byteLength, timestampUs);
+            analyzeRtcp(packet, packet.incoming, absoluteTimeMs, timestampUs);
         }
     }
 
@@ -596,6 +786,20 @@ function decode(events) {
 }
 
 function plot() {
+    // Flush any remaining accumulated bytes into a final bitrate data point.
+    Object.keys(perSsrcByteCount).forEach(key => {
+        const acc = perSsrcByteCount[key];
+        if (acc[0] > 0 && bitrateSeries[key]) {
+            // acc = [byteCount, lastFlushRelativeTimeMs, lastAbsoluteTimeMs]
+            // Use a minimum window of 1ms to avoid division by zero.
+            const lastPoint = bitrateSeries[key][bitrateSeries[key].length - 1];
+            const elapsedMs = acc[2] - lastPoint[0];
+            if (elapsedMs > 0) {
+                bitrateSeries[key].push([acc[2], 8000 * acc[0] / elapsedMs]);
+            }
+        }
+    });
+
     // Annotate BWE probe clusters with per-packet infos.
     bweProbeClusters.forEach(cluster => {
         cluster.packetInfos = bweProbeClusterToPackets[cluster.name];
@@ -667,7 +871,7 @@ function plot() {
     }).forEach(series => graph.addSeries(series, false));
     Object.keys(bitrateSeries).forEach(ssrc => {
         graph.addSeries({
-            name: 'average bitrate ssrc=' + ssrc + ' ' + (bitrateSeries[ssrc].incoming ? 'inbound' : 'outbound'),
+            name: 'average bitrate ssrc=' + ssrc + ' ' + (bitrateSeries[ssrc].incoming ? 'inbound' : 'outbound') + (rtxSsrcs.has(Number(ssrc)) ? ' (RTX)' : ''),
             data: bitrateSeries[ssrc],
         }, false);
     });
