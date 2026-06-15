@@ -860,7 +860,7 @@ function plot() {
     }).forEach(series => graph.addSeries(series, false));
     Object.keys(bitrateSeries).forEach(ssrc => {
         graph.addSeries({
-            name: 'average bitrate ssrc=' + ssrc + ' ' + (bitrateSeries[ssrc].incoming ? 'inbound' : 'outbound'),
+            name: 'average bitrate ssrc=' + ssrc + ' ' + (bitrateSeries[ssrc].incoming ? 'inbound' : 'outbound') + (rtxSsrcs.has(Number(ssrc)) ? ' (RTX)' : ''),
             data: bitrateSeries[ssrc],
         }, false);
     });
