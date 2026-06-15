@@ -244,7 +244,7 @@ function decodeLegacy(event, startTimeUs, absoluteStartTimeUs) {
         case 4: //'RTCP_EVENT':
             pcap.write(event.rtcpPacket.packetData, event.rtcpPacket.incoming, event.rtcpPacket.packetData.byteLength, absoluteStartTimeUs + event.timestampUs - startTimeUs);
             RTCP.forEach(event.rtcpPacket.packetData,
-                {payloadType: RTCP.PT_PFB, feedbackMessageType: RTCP.FMT_PLI, filter: (decoded) => {
+                {payloadType: RTCP.PT_PSFB, feedbackMessageType: RTCP.FMT_PLI, filter: (decoded) => {
                     pictureLossIndications[event.rtcpPacket.incoming ? 'inbound' : 'outbound'].push({
                         x: absoluteTimeMs,
                         y: event.rtcpPacket.incoming ? 1 : 0, // TODO: maybe use one y value per ssrc?
