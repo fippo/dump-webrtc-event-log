@@ -66,6 +66,7 @@ Promise.all([
             }
 
             protoRootV2 = root;
+            resolve();
         });
     }),
 ]).then(() => {
